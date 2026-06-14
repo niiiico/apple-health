@@ -37,9 +37,10 @@ rationale. In short:
 
 ```bash
 # Build the dataset (run from the repo root; uses uv — see global conventions)
+# Raw export archive lives at /Volumes/nicolas-data/HealthData/apple_health_export
 uv run ah-build \
-    --export "/path/to/apple_health_export/export.xml" \
-    --routes "/path/to/apple_health_export/workout-routes" \
+    --export "/Volumes/nicolas-data/HealthData/apple_health_export/export.xml" \
+    --routes "/Volumes/nicolas-data/HealthData/apple_health_export/workout-routes" \
     --db data/health.db
 
 # Print the headline-stats report
