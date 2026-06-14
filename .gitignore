@@ -1,0 +1,21 @@
+# Raw Apple Health export — large, immutable, kept on the NAS cold archive, never in git.
+data/
+*.db
+*.db-wal
+*.db-shm
+*.xml
+*.gpx
+export*.zip
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# OS
+.DS_Store
+tmp/
