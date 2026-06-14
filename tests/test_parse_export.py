@@ -74,3 +74,20 @@ def test_write_roundtrip(tmp_path):
     assert avg == 130.0
     assert conn.execute(
         "SELECT value FROM records WHERE type='RestingHeartRate'").fetchone()[0] == 52
+
+
+def test_derive_cadence(tmp_path):
+    conn = db.connect(tmp_path / "h.db")
+    db.init_schema(conn)
+    # speed 9.6 km/h, stride 1.0 m → 9.6*1000/60/1.0 = 160 spm
+    conn.executemany(
+        "INSERT INTO daily_metrics (day, type, unit, count, sum, min, max, avg) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        [("2024-03-01", "RunningSpeed", "km/hr", 100, None, None, None, 9.6),
+         ("2024-03-01", "RunningStrideLength", "m", 100, None, None, None, 1.0)],
+    )
+    conn.commit()
+    assert db.derive_cadence(conn) == 1
+    avg = conn.execute(
+        "SELECT avg FROM daily_metrics WHERE type='RunningCadence'").fetchone()[0]
+    assert abs(avg - 160.0) < 0.05

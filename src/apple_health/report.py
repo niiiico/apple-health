@@ -106,7 +106,7 @@ def build_report(conn: sqlite3.Connection) -> str:
 
     # Running form (daily_metrics, latest 3 years)
     out.append(_section("Running form (yearly avg)"))
-    for label, mtype in [("Cadence (spm)", "RunningCadence"),
+    for label, mtype in [("Cadence (spm, derived)", "RunningCadence"),
                         ("Vertical osc (cm)", "RunningVerticalOscillation"),
                         ("Ground contact (ms)", "RunningGroundContactTime"),
                         ("Stride length (m)", "RunningStrideLength")]:

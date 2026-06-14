@@ -51,6 +51,10 @@ def main(argv: list[str] | None = None) -> int:
         total_km = sum(s.distance_km for s in summaries)
         print(f"  routes={len(summaries):,} total={total_km:,.0f} km in {time.time() - t0:.0f}s")
 
+    if args.export:
+        n = db.derive_cadence(conn)
+        print(f"  derived RunningCadence for {n:,} days")
+
     conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('built_at', datetime('now'))")
     conn.commit()
     conn.close()
