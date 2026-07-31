@@ -56,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  derived RunningCadence for {n:,} days")
 
     conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('built_at', datetime('now'))")
+    conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('mode', 'full')")
     conn.commit()
     conn.close()
     print(f"Done → {args.db}")

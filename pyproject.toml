@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Parse an Apple Health export into a queryable SQLite dataset and report training stats."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "requests>=2.34.2",
+]
 
 [project.optional-dependencies]
 # Visualisation extras (route heatmap, plots) — not needed for the core parser/report.
@@ -13,7 +15,9 @@ dev = ["pytest>=8.0"]
 
 [project.scripts]
 ah-build = "apple_health.build_db:main"
+ah-ingest = "apple_health.ingest:main"
 ah-report = "apple_health.report:main"
+ah-html = "apple_health.html_report:main"
 
 [build-system]
 requires = ["hatchling"]

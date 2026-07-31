@@ -40,10 +40,12 @@ CREATE TABLE IF NOT EXISTS workouts (
     avg_hr       REAL,               -- from WorkoutStatistics, if present
     max_hr       REAL,
     source       TEXT,               -- sourceName (device/app)
-    indoor       INTEGER             -- 1 indoor, 0 outdoor, NULL unknown
+    indoor       INTEGER,            -- 1 indoor, 0 outdoor, NULL unknown
+    uuid         TEXT                -- HKWorkout.uuid for incremental sync (NULL for full-export rows)
 );
 CREATE INDEX IF NOT EXISTS ix_workouts_start ON workouts(start);
 CREATE INDEX IF NOT EXISTS ix_workouts_activity ON workouts(activity);
+CREATE INDEX IF NOT EXISTS ix_workouts_uuid ON workouts(uuid);
 
 -- One row per (day, quantity type): compact daily aggregate of every metric.
 CREATE TABLE IF NOT EXISTS daily_metrics (
@@ -82,6 +84,20 @@ CREATE TABLE IF NOT EXISTS routes (
     min_lat REAL, min_lon REAL, max_lat REAL, max_lon REAL
 );
 CREATE INDEX IF NOT EXISTS ix_routes_start ON routes(start);
+
+-- Provenance of incrementally-ingested delta files (see ADR 002). Each delta
+-- filename is recorded inside the same transaction that applies it, so a file
+-- is applied at most once — the sole idempotency guard for the additive
+-- daily_metrics merge.
+CREATE TABLE IF NOT EXISTS applied_deltas (
+    filename   TEXT PRIMARY KEY,
+    applied_at TEXT DEFAULT (datetime('now')),
+    anchor_seq INTEGER,
+    n_workouts INTEGER,
+    n_records  INTEGER,
+    n_daily    INTEGER,
+    n_routes   INTEGER
+);
 """
 
 
@@ -98,6 +114,21 @@ def connect(path: str | Path) -> sqlite3.Connection:
 def init_schema(conn: sqlite3.Connection) -> None:
     """Create all tables and indexes if they do not exist."""
     conn.executescript(SCHEMA)
+    conn.commit()
+
+
+def ensure_incremental_schema(conn: sqlite3.Connection) -> None:
+    """Bring an existing DB up to the incremental-sync schema.
+
+    ``init_schema`` creates everything for a *fresh* DB, but ``CREATE TABLE IF
+    NOT EXISTS`` will not add the ``workouts.uuid`` column to a ``workouts``
+    table that predates it. This adds the column (and its index) if missing, and
+    relies on ``init_schema`` for the ``applied_deltas`` table. Idempotent.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(workouts)")}
+    if "uuid" not in cols:
+        conn.execute("ALTER TABLE workouts ADD COLUMN uuid TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_workouts_uuid ON workouts(uuid)")
     conn.commit()
 
 

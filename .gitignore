@@ -16,6 +16,12 @@ __pycache__/
 dist/
 build/
 
+# Generated reports (rebuilt from the DB on demand)
+reports/
+
+# Xcode (per-user state)
+xcuserdata/
+
 # OS
 .DS_Store
 tmp/

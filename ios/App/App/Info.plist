@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Required, or HKHealthStore.requestAuthorization raises an NSException. -->
+	<key>NSHealthShareUsageDescription</key>
+	<string>Reads your workouts and health metrics to sync them to your personal archive.</string>
+	<!-- Must contain AppDelegate.refreshTaskID, or BGTaskScheduler.register
+	     crashes at launch with NSInternalInconsistencyException. -->
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>net.dev2.healthsync.refresh</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+	</array>
+	<!-- Makes the container's Documents/ visible in iCloud Drive / Files, so
+	     the Mac sees the delta folder. Bump CFBundleVersion after editing this
+	     dict — iOS only re-reads it on a version change. -->
+	<key>NSUbiquitousContainers</key>
+	<dict>
+		<key>iCloud.net.dev2.healthsync</key>
+		<dict>
+			<key>NSUbiquitousContainerIsDocumentScopePublic</key>
+			<true/>
+			<key>NSUbiquitousContainerName</key>
+			<string>HealthSync</string>
+			<key>NSUbiquitousContainerSupportedFolderLevels</key>
+			<string>Any</string>
+		</dict>
+	</dict>
+</dict>
+</plist>
