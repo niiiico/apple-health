@@ -108,33 +108,20 @@ final class SyncEngine {
             // Still advance anchors — we have consumed this window, just nothing to ship.
             for p in pendingAnchors { anchors.setAnchor(p.anchor, for: p.key) }
             anchors.commitSeq(seq)
-            let drained = try await drainQuietly()
-            return "Up to date — nothing new." + (drained > 0 ? " Uploaded \(drained) queued files." : "")
+            return "Up to date — nothing new."
         }
 
-        // Stage in the local outbox (sidecars first, JSON last, atomic). The
-        // outbox is the durability gate — safe to advance anchors now; the
-        // upload below is retried transport, never a reason to re-query.
+        // Write to iCloud Drive (sidecars first, JSON last, atomic). The local
+        // write is the durable write — iCloud uploads it for us — so it is safe
+        // to advance anchors as soon as it returns. A throw here leaves the
+        // anchors untouched and the same window is simply re-queried next time.
         try writer.write(delta: delta, sidecars: sidecars, seq: seq)
         for p in pendingAnchors { anchors.setAnchor(p.anchor, for: p.key) }
         anchors.commitSeq(seq)
 
-        let summary = "Synced \(delta.workouts.added.count) workouts, "
-                    + "\(delta.daily_metrics.added.count) metric-days, "
-                    + "\(delta.records.added.count) records."
-        do {
-            try await writer.drainOutbox(using: BoxClient.shared)
-            return summary + " Uploaded to Box."
-        } catch {
-            let queued = (try? writer.pendingNames().count) ?? 0
-            return summary + " Upload failed (\(error.localizedDescription)) — \(queued) files queued, will retry next sync."
-        }
-    }
-
-    /// Best-effort drain of leftovers from a previously failed upload.
-    private func drainQuietly() async throws -> Int {
-        guard try !writer.pendingNames().isEmpty else { return 0 }
-        return try await writer.drainOutbox(using: BoxClient.shared)
+        return "Synced \(delta.workouts.added.count) workouts, "
+             + "\(delta.daily_metrics.added.count) metric-days, "
+             + "\(delta.records.added.count) records."
     }
 
     /// One-off repair pass: write the `hr-<uuid>.csv` sidecar for every workout
@@ -147,9 +134,9 @@ final class SyncEngine {
     /// neither deltas nor anchors are touched.
     func backfillHRSeries() async throws -> String {
         let workouts = try await workoutsSinceCutoff()
-        // Skip anything already in Box or already staged locally.
-        let existing = try await BoxClient.shared.existingFileNames()
-            .union(try writer.pendingNames())
+        // Skip anything already in the folder, including files that exist only
+        // as not-yet-downloaded iCloud placeholders on this device.
+        let existing = try writer.existingFileNames()
         var written = 0, present = 0, noHR = 0
         for w in workouts {
             let name = "hr-\(w.uuid.uuidString).csv"
@@ -161,7 +148,6 @@ final class SyncEngine {
             try writer.writeSidecar(name: name, content: csv)
             written += 1
         }
-        try await writer.drainOutbox(using: BoxClient.shared)
         return "HR backfill: \(written) written, \(present) already present, \(noHR) without HR."
     }
 

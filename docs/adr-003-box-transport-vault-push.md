@@ -1,6 +1,15 @@
 # ADR-003 — Box as sync transport + automated Vault push
 
-Date: 2026-07-14 · Status: accepted
+Date: 2026-07-14 · Status: **partially superseded** by
+[ADR-004](adr-004-revert-to-icloud-transport.md) (2026-07-31)
+
+> **The transport decision below was reverted.** It was implemented but never
+> activated, and iCloud Drive is the delta transport again. The *automated
+> Vault push* half of this ADR remains in force — `vault_push.py`,
+> `box_client.py` and `box_auth.py` are live, because the Claude Vault is on
+> Box regardless of transport. The transport code is archived at tag
+> `box-transport-v1`. Read ADR-004 for why, and the *Durability (producer)*
+> section below for the part still worth keeping if Box ever returns.
 
 ## Context
 

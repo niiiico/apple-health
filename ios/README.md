@@ -2,10 +2,12 @@
 
 On-device producer for the incremental-sync path
 ([ADR-002](../docs/adr-002-incremental-sync.md)). It reads new HealthKit data
-since the last anchor, stages [delta files](../docs/delta-contract.md) in a
-local outbox, and uploads them to the Box `HealthSync/` folder
-([ADR-003](../docs/adr-003-box-transport-vault-push.md)), where the Mac's
-`tools/sync_cycle.py` picks them up.
+since the last anchor and writes [delta files](../docs/delta-contract.md) into
+its iCloud Drive folder, where the Mac's `tools/sync_cycle.py` picks them up.
+
+> Transport note: a Box-based transport was built in July 2026 and reverted
+> before activation — see [ADR-004](../docs/adr-004-revert-to-icloud-transport.md).
+> The app needs **no** Box credentials and no login.
 
 The Xcode project is checked in at `App/App.xcodeproj` with the required
 capabilities and Info.plist keys already configured — open it, select your
@@ -26,15 +28,12 @@ team, and run on a real iPhone (HealthKit is unavailable in the Simulator).
   anchors (so a failed sync just retries the same window).
 - `RouteExporter` — `HKWorkoutRouteQuery` → GPX 1.1 matching Apple's
   `workout-routes/*.gpx` so `parse_gpx` reads it unchanged.
-- `DeltaWriter` — stages sidecars (route GPX, per-workout HR-series CSV) first,
-  then the JSON atomically, in a **local outbox** (`Documents/HealthSyncOutbox`),
-  then drains the outbox to Box (sidecars before deltas, oldest first, local
-  file deleted only after its upload lands). Anchors advance on the outbox
-  write, not the upload — a failed upload just leaves files queued for the
-  next sync. The HR series feeds `tools/session_detail.py`; it is not
-  ingested into the DB.
-- `BoxClient` — OAuth login (`ASWebAuthenticationSession`), rotating refresh
-  token in the Keychain, multipart uploads with 409 → new-version fallback.
+- `DeltaWriter` — writes sidecars (route GPX, per-workout HR-series CSV) first,
+  then the JSON, atomically, into
+  `iCloud.net.dev2.healthsync/Documents/HealthSync/`. The local write **is**
+  the durable write (iCloud uploads it for us), so anchors advance as soon as
+  it returns — no outbox, no network in the path. The HR series feeds
+  `tools/session_detail.py`; it is not ingested into the DB.
 - `AppDelegate` — registers a daily `BGAppRefreshTask`; `ContentView` adds a
   manual "Sync now" button and a "Backfill HR series" button (below).
 
@@ -44,26 +43,13 @@ Deltas written by app versions older than 2026-07-11 carried no
 `hr-<uuid>.csv`, and anchors have advanced past those workouts, so a normal
 sync can never re-emit them. The backfill button repairs this: it re-queries
 every workout since `bootstrapCutoff` with a plain (non-anchored) query and
-writes only the *missing* HR CSVs — files already in the Box folder or staged
-in the outbox are skipped. It writes no delta JSON and touches no anchors,
+writes only the *missing* HR CSVs — files already in the iCloud folder are
+skipped, including ones present only as not-yet-downloaded `.icloud`
+placeholders. It writes no delta JSON and touches no anchors,
 which is safe precisely because HR CSVs are never ingested into `health.db`
 (see the backfill exception in
 [delta-contract.md](../docs/delta-contract.md)). Idempotent; run it whenever
 `tools/session_detail.py` reports missing series.
-
-## Box setup (one-time)
-
-1. In the [Box developer console](https://app.box.com/developers/console),
-   create a **Custom App → User Authentication (OAuth 2.0)**.
-2. Configuration: add redirect URIs `healthsync://box-auth` (app) and
-   `http://localhost:53682/callback` (Mac tools); scope **Read and write all
-   files and folders**.
-3. Paste the client id/secret into `BoxConfig` (`BoxClient.swift`) and
-   rebuild; on the Mac run
-   `uv run python tools/box_auth.py --client-id … --client-secret …`.
-4. In the app, tap **Connect Box** and log in once. The refresh token rotates
-   on every sync and dies only after 60 days *unused* — reconnect if that
-   ever happens.
 
 ## Project configuration (already in the repo)
 
@@ -115,15 +101,16 @@ of the entire HealthKit history (which would risk an out-of-memory kill).
 
 ## Where the files land
 
-Box → `HealthSync/` at the account root (the Vault folder is never used for
-raw data). On the Mac, `tools/box_fetch.py` mirrors new files into the local
-inbox `/Volumes/nicolas-data/HealthData/healthsync-inbox/`, which is what
+The app writes to `iCloud.net.dev2.healthsync/Documents/HealthSync/`, visible
+on the Mac at
+`~/Library/Mobile Documents/iCloud~net~dev2~healthsync/Documents/HealthSync/`.
+
+On the Mac, `tools/icloud_fetch.py` mirrors new files into the durable inbox
+`/Volumes/nicolas-data/HealthData/healthsync-inbox/`, which is what
 `ah-ingest --inbox`, `session_detail` and `vault_push` read;
 `tools/sync_cycle.py` chains all of it (launchd plist in `tools/launchd/`).
-
-The iCloud container entitlement is still in the project (dropping it would
-churn provisioning) but no code writes there since ADR-003; the pre-Box
-history was copied into the local inbox at cutover.
+The inbox is a separate copy on purpose: iCloud evicts cold local files, and
+the HR-series CSVs must stay readable long after their delta was ingested.
 
 ## Notes & limitations
 

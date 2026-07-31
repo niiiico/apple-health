@@ -1,11 +1,11 @@
 # Delta file contract (v1)
 
 The interface between the on-device **HealthSync** app (producer) and the
-`ah-ingest` command (consumer). The app uploads delta files to the Box
-`HealthSync/` transport folder (via a local outbox — ADR-003);
-`tools/box_fetch.py` mirrors them into a local inbox, and `ah-ingest` reads
-files it has not yet applied and merges them idempotently into `health.db`.
-Both sides MUST agree on this document.
+`ah-ingest` command (consumer). The app writes delta files into its iCloud
+Drive folder `iCloud.net.dev2.healthsync/Documents/HealthSync/` (ADR-002,
+restored by ADR-004); `tools/icloud_fetch.py` mirrors them into a local inbox,
+and `ah-ingest` reads files it has not yet applied and merges them
+idempotently into `health.db`. Both sides MUST agree on this document.
 
 > Versioned by the top-level `schema` integer. A consumer MUST refuse a file
 > whose `schema` it does not understand rather than guess.
@@ -183,8 +183,9 @@ reconciles any drift from missed deletions.
    The cutoff also keeps the anchor-less first sync bounded instead of pulling
    the entire HealthKit history.
 2. Persist one `HKQueryAnchor` per observed type; advance only after the delta
-   file is durably staged in the local outbox (the Box upload is retried
-   transport, never a reason to re-query — see ADR-003).
+   file has been written to the iCloud folder — that local write is the
+   durable write, and iCloud uploads it afterwards (ADR-004). A failed write
+   leaves anchors untouched, so the same window is simply re-queried.
 3. Aggregate dense quantity samples into `(day, type)` buckets in the fixed unit
    before writing; emit sparse-allowlist types and workouts as rows.
 4. Write sidecars (route GPX, HR-series CSV) next to the JSON, referenced by

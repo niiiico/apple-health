@@ -6,7 +6,6 @@ struct ContentView: View {
     private let engine = SyncEngine()
     @State private var status = "Ready."
     @State private var busy = false
-    @State private var boxConnected = BoxClient.shared.isAuthorized
     @AppStorage("anchor.seq") private var lastSeq = 0
 
     var body: some View {
@@ -40,20 +39,8 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
-            .disabled(busy || !boxConnected)
+            .disabled(busy)
             .padding(.horizontal, 40)
-
-            if !boxConnected {
-                Button {
-                    Task { await connectBox() }
-                } label: {
-                    Label("Connect Box", systemImage: "link")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .disabled(busy)
-                .padding(.horizontal, 40)
-            }
 
             if lastSeq > 0 {
                 Text("Last sync #\(lastSeq)").font(.footnote).foregroundStyle(.tertiary)
@@ -78,16 +65,6 @@ struct ContentView: View {
         defer { busy = false }
         do { status = try await engine.backfillHRSeries() }
         catch { status = "Backfill failed: \(error.localizedDescription)" }
-    }
-
-    private func connectBox() async {
-        busy = true
-        defer { busy = false }
-        do {
-            try await BoxClient.shared.authorize()
-            boxConnected = true
-            status = "Box connected. Tap Sync now."
-        } catch { status = "Box connection failed: \(error.localizedDescription)" }
     }
 }
 

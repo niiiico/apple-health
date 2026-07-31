@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Periodic HealthSync cycle: Box → inbox → health.db → Vault (ADR-003).
+<!-- Periodic HealthSync cycle: iCloud → inbox → health.db → Vault (ADR-004).
      Install:
        cp tools/launchd/net.dev2.healthsync.sync.plist ~/Library/LaunchAgents/
        launchctl load ~/Library/LaunchAgents/net.dev2.healthsync.sync.plist

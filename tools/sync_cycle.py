@@ -1,11 +1,14 @@
-"""One full sync cycle: Box → inbox → health.db → session files → Vault.
+"""One full sync cycle: iCloud → inbox → health.db → session files → Vault.
 
-Chains the pipeline of ADR-003 in-process (no shell):
+Chains the pipeline in-process (no shell):
 
-1. ``box_fetch`` — mirror new files from the Box ``HealthSync/`` folder.
+1. ``icloud_fetch`` — mirror new files from the app's iCloud Drive folder.
 2. ``ah-ingest`` — merge pending deltas into ``health.db``.
 3. ``session_detail`` — re-render the last 14 days of session markdown.
 4. ``vault_push`` — refresh the rolling Vault files + weekly brief.
+
+The transport is iCloud (ADR-004); Box remains only as the *destination* of
+step 4, the Claude Vault.
 
 Steps 2–4 are skipped when step 1 fetched nothing (pass ``--force`` to run
 them anyway). Designed for launchd (see ``tools/launchd/``) but safe to run by
@@ -27,14 +30,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from apple_health import ingest  # noqa: E402
-import box_fetch  # noqa: E402
+import icloud_fetch  # noqa: E402
 import session_detail  # noqa: E402
 import vault_push  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Run one Box→DB→Vault sync cycle.")
-    ap.add_argument("--inbox", type=Path, default=box_fetch.DEFAULT_INBOX)
+    ap = argparse.ArgumentParser(description="Run one iCloud→DB→Vault sync cycle.")
+    ap.add_argument("--inbox", type=Path, default=icloud_fetch.DEFAULT_INBOX)
     ap.add_argument("--db", type=Path,
                     default=Path(__file__).resolve().parent.parent / "data/health.db")
     ap.add_argument("--force", action="store_true",
@@ -43,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
 
     fetched = io.StringIO()
     with contextlib.redirect_stdout(fetched):
-        box_fetch.main(["--inbox", str(args.inbox)])
+        icloud_fetch.main(["--inbox", str(args.inbox)])
     print(fetched.getvalue(), end="")
     if not fetched.getvalue() and not args.force:
         print("nothing new")

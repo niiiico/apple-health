@@ -1,5 +1,5 @@
-"""Tests for the pure (no-network) parts of the Box/Vault pipeline:
-vault_push rendering + bookkeeping helpers, and box_fetch download planning.
+"""Tests for the pure (no-network) parts of the sync pipeline:
+vault_push rendering + bookkeeping helpers, and icloud_fetch copy planning.
 """
 
 from __future__ import annotations
@@ -10,10 +10,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
-import box_fetch  # noqa: E402
+import icloud_fetch  # noqa: E402
 import vault_push  # noqa: E402
 from apple_health import db  # noqa: E402
-from apple_health.box_client import BoxItem  # noqa: E402
 
 
 def _conn(tmp_path):
@@ -77,17 +76,22 @@ def test_append_changelog_once_per_day():
     assert vault_push._append_changelog(out, date(2026, 7, 14), ["b.md"]) is None
 
 
-def test_plan_downloads_orders_sidecars_before_deltas():
+def test_plan_copies_orders_sidecars_before_deltas():
     remote = [
-        BoxItem("1", "delta-20260701T000000Z-0001.json", "file"),
-        BoxItem("2", "hr-B.csv", "file"),
-        BoxItem("3", "route-A.gpx", "file"),
-        BoxItem("4", "delta-20260630T000000Z-0000.json", "file"),
-        BoxItem("5", "already.json", "file"),
-        BoxItem("6", "subfolder", "folder"),
+        "delta-20260701T000000Z-0001.json",
+        "hr-B.csv",
+        "route-A.gpx",
+        "delta-20260630T000000Z-0000.json",
+        "already.json",
     ]
-    plan = box_fetch.plan_downloads(remote, {"already.json"})
-    names = [i.name for i in plan]
-    assert names == ["hr-B.csv", "route-A.gpx",
-                     "delta-20260630T000000Z-0000.json",
-                     "delta-20260701T000000Z-0001.json"]
+    assert icloud_fetch.plan_copies(remote, {"already.json"}) == [
+        "hr-B.csv", "route-A.gpx",
+        "delta-20260630T000000Z-0000.json",
+        "delta-20260701T000000Z-0001.json"]
+
+
+def test_plan_copies_treats_icloud_placeholders_as_the_real_file():
+    # A file present only as a not-yet-downloaded placeholder still needs
+    # copying; one already in the inbox must not be copied twice.
+    assert icloud_fetch.plan_copies([".hr-B.csv.icloud"], set()) == ["hr-B.csv"]
+    assert icloud_fetch.plan_copies([".hr-B.csv.icloud"], {"hr-B.csv"}) == []

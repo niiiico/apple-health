@@ -1,30 +1,49 @@
 import Foundation
 import UIKit
 
-/// Stages delta JSON + sidecars in a local **outbox**, then drains it to the
-/// Box transport folder (ADR-003).
+/// Writes delta JSON + sidecars into the app's iCloud Drive folder
+/// (ADR-002; restored by ADR-004 after the Box experiment).
 ///
-/// The outbox is the durability gate: a file that reaches it WILL eventually
-/// reach Box (drain retries on every sync), so anchors may advance as soon as
-/// the local write succeeds — never re-emitting a window means never
-/// double-counting. Ordering guarantee for the consumer: within a drain,
-/// every sidecar is uploaded before any delta JSON, and deltas go oldest
-/// first, so a delta is never visible before the files it references.
+/// iCloud gives durability for free: the write into the ubiquity container
+/// **is** the durable write — the sync daemon uploads it afterwards with no
+/// help from us, and the file survives app termination and reboots. Anchors
+/// may therefore advance as soon as `write` returns, with no outbox and no
+/// network in the path.
+///
+/// Ordering guarantee for the consumer: every sidecar is written before the
+/// delta JSON that references it, so a delta is never visible before its
+/// files. (iCloud does not guarantee *propagation* order, so `ah-ingest`
+/// still tolerates a delta whose sidecars have not landed yet — see
+/// docs/delta-contract.md.)
 struct DeltaWriter {
 
-    /// Local staging folder (Documents/HealthSyncOutbox — survives restarts,
-    /// visible in the Files app for debugging).
-    static func outboxURL() throws -> URL {
-        let docs = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask,
-                                               appropriateFor: nil, create: true)
-        let dir = docs.appendingPathComponent("HealthSyncOutbox", isDirectory: true)
+    enum WriterError: LocalizedError {
+        case iCloudUnavailable
+        var errorDescription: String? {
+            "iCloud Drive unavailable — check that iCloud is signed in and enabled for HealthSync."
+        }
+    }
+
+    /// Must match `com.apple.developer.ubiquity-container-identifiers` in
+    /// App.entitlements and the `NSUbiquitousContainers` key in Info.plist.
+    static let containerID = "iCloud.net.dev2.healthsync"
+
+    /// `<ubiquity container>/Documents/HealthSync/`, created on first use.
+    /// The first call blocks while the container is provisioned, so call it
+    /// off the main thread.
+    static func folderURL() throws -> URL {
+        guard let container = FileManager.default
+            .url(forUbiquityContainerIdentifier: containerID) else {
+            throw WriterError.iCloudUnavailable
+        }
+        let dir = container.appendingPathComponent("Documents/HealthSync", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
 
-    /// Stage one sync's files: sidecars first, JSON last, all atomic.
+    /// Write one sync's files: sidecars first, JSON last, all atomic.
     func write(delta: Delta, sidecars: [(name: String, content: String)], seq: Int) throws {
-        let dir = try Self.outboxURL()
+        let dir = try Self.folderURL()
         for file in sidecars {
             try file.content.data(using: .utf8)!
                 .write(to: dir.appendingPathComponent(file.name), options: .atomic)
@@ -36,38 +55,26 @@ struct DeltaWriter {
         try data.write(to: dir.appendingPathComponent(name), options: .atomic)
     }
 
-    /// Stage a single sidecar with no accompanying delta JSON. Only valid for
+    /// Write a single sidecar with no accompanying delta JSON. Only valid for
     /// files that are not ingested into the DB (HR-series CSVs — see the
-    /// backfill note in docs/delta-contract.md).
+    /// backfill exception in docs/delta-contract.md).
     func writeSidecar(name: String, content: String) throws {
-        let url = try Self.outboxURL().appendingPathComponent(name)
+        let url = try Self.folderURL().appendingPathComponent(name)
         try content.data(using: .utf8)!.write(to: url, options: .atomic)
     }
 
-    /// Names currently staged (pending upload).
-    func pendingNames() throws -> [String] {
-        try FileManager.default.contentsOfDirectory(atPath: Self.outboxURL().path)
-            .filter { !$0.hasPrefix(".") }
+    /// Names already present in the folder. A file this device has not
+    /// materialised locally appears as a `.<name>.icloud` placeholder — it is
+    /// still present, so the name is normalised before comparison.
+    func existingFileNames() throws -> Set<String> {
+        let names = try FileManager.default.contentsOfDirectory(atPath: Self.folderURL().path)
+        return Set(names.map(Self.resolvePlaceholder))
     }
 
-    /// Upload everything in the outbox — sidecars first, then delta JSONs in
-    /// ascending (chronological) filename order — deleting each local file
-    /// once its upload succeeds. Throws on the first failure; whatever
-    /// remains stays queued for the next drain. Returns the uploaded count.
-    @discardableResult
-    func drainOutbox(using box: BoxClient) async throws -> Int {
-        let dir = try Self.outboxURL()
-        let names = try pendingNames()
-        let sidecars = names.filter { !$0.hasPrefix("delta-") }.sorted()
-        let deltas = names.filter { $0.hasPrefix("delta-") }.sorted()
-        var uploaded = 0
-        for name in sidecars + deltas {
-            let url = dir.appendingPathComponent(name)
-            try await box.upload(name: name, content: try Data(contentsOf: url))
-            try FileManager.default.removeItem(at: url)
-            uploaded += 1
-        }
-        return uploaded
+    /// `.route-X.gpx.icloud` → `route-X.gpx`; any other name unchanged.
+    static func resolvePlaceholder(_ name: String) -> String {
+        guard name.hasPrefix("."), name.hasSuffix(".icloud") else { return name }
+        return String(name.dropFirst().dropLast(".icloud".count))
     }
 }
 

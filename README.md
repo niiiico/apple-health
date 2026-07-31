@@ -66,9 +66,11 @@ versioned.
 Apple's "Export All Health Data" is all-or-nothing — re-exporting the multi-GB
 archive just to add a week of runs is painful. The incremental path avoids it:
 a small on-device app reads only what's new since the last sync and drops a
-compact **delta file** into an iCloud/Dropbox folder, which `ah-ingest` merges
+compact **delta file** into an iCloud Drive folder, which `ah-ingest` merges
 into the DB. See [`docs/adr-002-incremental-sync.md`](docs/adr-002-incremental-sync.md)
-and the [delta contract](docs/delta-contract.md).
+and the [delta contract](docs/delta-contract.md). (A Box-based transport was
+built and reverted before activation —
+[ADR-004](docs/adr-004-revert-to-icloud-transport.md).)
 
 ```bash
 # Merge any new delta files (idempotent — safe to re-run, e.g. from cron)
@@ -77,10 +79,16 @@ uv run ah-ingest \
     --db data/health.db
 ```
 
-- **Producer:** the `HealthSync` iOS app under [`ios/HealthSync/`](ios/HealthSync/)
+- **Producer:** the `HealthSync` iOS app under [`ios/`](ios/)
   (`HKAnchoredObjectQuery` for new/deleted samples; pre-aggregates dense metrics
   into daily buckets; exports route GPX). Build/sign it from Xcode — see its
   README.
+- **Unattended:** `tools/sync_cycle.py` chains the whole pipeline
+  (`icloud_fetch` → `ah-ingest` → `session_detail` → `vault_push`) and runs
+  every 30 min under launchd — copy `tools/launchd/net.dev2.healthsync.sync.plist`
+  into `~/Library/LaunchAgents/` and `launchctl load` it. The final step pushes
+  curated summaries to the Claude Vault on Box and needs a one-time
+  `uv run python tools/box_auth.py` on the Mac.
 - **Bootstrap:** the first sync has no anchor, so it ships your full history as
   one delta — point `ah-ingest` at a **fresh** `--db` to bootstrap. (`ah-ingest`
   refuses to merge into a DB made by full `ah-build`, since unioning the two
