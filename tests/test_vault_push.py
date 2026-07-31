@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
 import icloud_fetch  # noqa: E402
+import sync_cycle  # noqa: E402
 import vault_push  # noqa: E402
 from apple_health import db  # noqa: E402
 
@@ -95,3 +96,78 @@ def test_plan_copies_treats_icloud_placeholders_as_the_real_file():
     # copying; one already in the inbox must not be copied twice.
     assert icloud_fetch.plan_copies([".hr-B.csv.icloud"], set()) == ["hr-B.csv"]
     assert icloud_fetch.plan_copies([".hr-B.csv.icloud"], {"hr-B.csv"}) == []
+
+
+def test_plan_copies_skips_dotfiles_and_the_empty_name_edge_case():
+    # A file literally named ".icloud" must not resolve to "", which would
+    # address the source directory itself.
+    assert icloud_fetch.resolve_placeholder(".icloud") == ".icloud"
+    assert icloud_fetch.plan_copies([".icloud", ".DS_Store"], set()) == []
+
+
+def _src(tmp_path):
+    src = tmp_path / "icloud"
+    src.mkdir()
+    (src / "hr-A.csv").write_text("time,bpm\n")
+    (src / "delta-20260701T000000Z-0001.json").write_text("{}")
+    return src
+
+
+def test_main_copies_then_is_idempotent(tmp_path, capsys):
+    src, inbox = _src(tmp_path), tmp_path / "inbox"
+    assert icloud_fetch.main(["--source", str(src), "--inbox", str(inbox)]) == 0
+    assert capsys.readouterr().out.split() == [
+        "hr-A.csv", "delta-20260701T000000Z-0001.json"]
+    assert (inbox / "hr-A.csv").read_text() == "time,bpm\n"
+
+    # Second run: nothing new, and empty stdout is what tells sync_cycle so.
+    assert icloud_fetch.main(["--source", str(src), "--inbox", str(inbox)]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_main_skips_directories(tmp_path, capsys):
+    src, inbox = _src(tmp_path), tmp_path / "inbox"
+    (src / "subfolder").mkdir()
+    assert icloud_fetch.main(["--source", str(src), "--inbox", str(inbox)]) == 0
+    assert "subfolder" not in capsys.readouterr().out
+    assert not (inbox / "subfolder").exists()
+
+
+def test_main_leaves_no_partial_file_when_a_copy_fails(tmp_path, capsys, monkeypatch):
+    src, inbox = _src(tmp_path), tmp_path / "inbox"
+
+    def die(s, d, *a, **kw):  # simulate an interrupted copy mid-write
+        Path(d).write_text("trunc")
+        raise OSError("connection reset")
+
+    monkeypatch.setattr(icloud_fetch.shutil, "copyfile", die)
+    assert icloud_fetch.main(["--source", str(src), "--inbox", str(inbox)]) == 1
+    # No truncated file may survive, or it would count as present forever.
+    assert list(inbox.iterdir()) == []
+    assert capsys.readouterr().out == ""
+
+
+def test_main_reports_a_missing_source_folder(tmp_path):
+    assert icloud_fetch.main(
+        ["--source", str(tmp_path / "gone"), "--inbox", str(tmp_path / "inbox")]) == 1
+
+
+def _cycle_args(tmp_path):
+    return ["--inbox", str(tmp_path), "--db", str(tmp_path / "health.db")]
+
+
+def test_sync_cycle_stops_and_reports_when_the_fetch_fails(tmp_path, monkeypatch):
+    # A dead transport must not look like a healthy quiet cycle (ADR-004).
+    ran = []
+    monkeypatch.setattr(sync_cycle.icloud_fetch, "main", lambda argv: 1)
+    monkeypatch.setattr(sync_cycle.ingest, "main", lambda argv: ran.append("ingest"))
+    assert sync_cycle.main(_cycle_args(tmp_path)) == 1
+    assert ran == []
+
+
+def test_sync_cycle_skips_the_pipeline_when_nothing_was_fetched(tmp_path, monkeypatch):
+    ran = []
+    monkeypatch.setattr(sync_cycle.icloud_fetch, "main", lambda argv: 0)
+    monkeypatch.setattr(sync_cycle.ingest, "main", lambda argv: ran.append("ingest"))
+    assert sync_cycle.main(_cycle_args(tmp_path)) == 0
+    assert ran == []

@@ -53,8 +53,16 @@ Re-examining ADR-003's premises against that experience:
   into the durable inbox at `/Volumes/nicolas-data/HealthData/healthsync-inbox/`,
   keeping the ADR-003 inbox location — iCloud evicts cold local copies, and
   `session_detail` needs HR CSVs readable long after ingest. It preserves the
-  sidecars-before-deltas copy order and treats `.<name>.icloud` placeholders
-  as present, materialising them by reading the real path.
+  sidecars-before-deltas copy order, and each file is copied to a temp name
+  and atomically renamed, so an interrupted copy can never leave a truncated
+  file that later runs would treat as complete.
+- **Eviction here is dataless-file based** (verified: `SF_DATALESS` set, real
+  directory entries, no `.icloud` files in the container). An evicted file
+  keeps its name and true size, and reading it faults the data back in — so
+  copying *is* the materialisation. The legacy `.<name>.icloud` plist
+  representation is handled defensively but is not what this container uses;
+  in that representation the real name has no directory entry, so the copy
+  fails and the file is retried next cycle rather than downloaded.
 - `sync_cycle.py` is otherwise unchanged: `icloud_fetch` → `ah-ingest` →
   `session_detail` → `vault_push`.
 - **Box remains a destination, not a transport.** `box_client.py`,
@@ -86,7 +94,20 @@ the correct answer to "the publish step can fail" and would apply unchanged.
   the app container and forces a full `ah-build` re-base (ADR-002).
 - **iCloud's opacity is contained, not solved.** `icloud_fetch` cannot force a
   download; a file that will not materialise is skipped and retried next
-  cycle. Persistent failure is visible only in the launchd log.
+  cycle. It does return non-zero on a hard failure (missing source folder,
+  failed copy) and `sync_cycle` propagates that instead of printing
+  "nothing new", so a dead transport no longer reads as a healthy cycle.
+- **Sidecar ordering is weaker than under Box.** ADR-003's drain uploaded all
+  sidecars before any delta, so the transport folder never held a delta
+  without its files. iCloud gives no propagation-order guarantee, and
+  `icloud_fetch` can only order files already visible on the Mac. If a delta
+  lands before its route GPX, `ah-ingest` prints `! route file missing,
+  skipped` yet still records the delta in `applied_deltas`, so that `routes`
+  row is lost until a full `ah-build`. Blast radius is small — `routes` only
+  feeds `report.py`, and `session_detail` reads GPX by uuid and re-renders 14
+  days each cycle — but it is silent. This is a restoration of the ADR-002
+  behaviour, not a new regression. Deferring a delta whose non-null
+  `route_file` is absent would close it; not done here.
 - **Staleness is still silent.** Nothing yet warns when the newest applied
   delta is days old — the actual failure mode of the last two weeks. A
   freshness check in `sync_cycle` is the obvious follow-up and is deliberately

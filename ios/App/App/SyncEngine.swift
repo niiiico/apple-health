@@ -136,6 +136,7 @@ final class SyncEngine {
         let workouts = try await workoutsSinceCutoff()
         // Skip anything already in the folder, including files that exist only
         // as not-yet-downloaded iCloud placeholders on this device.
+        let dir = try DeltaWriter.folderURL()
         let existing = try writer.existingFileNames()
         var written = 0, present = 0, noHR = 0
         for w in workouts {
@@ -145,7 +146,7 @@ final class SyncEngine {
                 noHR += 1
                 continue
             }
-            try writer.writeSidecar(name: name, content: csv)
+            try writer.writeSidecar(name: name, content: csv, in: dir)
             written += 1
         }
         return "HR backfill: \(written) written, \(present) already present, \(noHR) without HR."

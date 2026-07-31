@@ -34,6 +34,12 @@ A single sync run (anchor advance) produces:
 - `ah-ingest` processes pending deltas in **ascending filename order** (which is
   chronological) and records each applied filename so it is never re-applied.
 - A delta references its sidecar files by name; they sit beside the JSON.
+- **A missing sidecar is not retried.** If a delta is applied while its
+  `route_file` has not yet arrived, `ah-ingest` warns (`! route file missing,
+  skipped`) but still records the delta as applied, so that `routes` row is
+  lost until a full `ah-build`. The producer writes sidecars first and
+  `icloud_fetch` copies them first, but iCloud does not guarantee propagation
+  order — see ADR-004. Consumers MUST NOT assume a referenced sidecar exists.
 - **Exception — HR-series backfill.** `hr-<uuid>.csv` files MAY exist with no
   delta referencing them: the app's "Backfill HR series" pass (added
   2026-07-12) writes the missing CSVs for workouts synced by app versions

@@ -58,9 +58,12 @@ struct DeltaWriter {
     /// Write a single sidecar with no accompanying delta JSON. Only valid for
     /// files that are not ingested into the DB (HR-series CSVs — see the
     /// backfill exception in docs/delta-contract.md).
-    func writeSidecar(name: String, content: String) throws {
-        let url = try Self.folderURL().appendingPathComponent(name)
-        try content.data(using: .utf8)!.write(to: url, options: .atomic)
+    ///
+    /// Takes the folder as a parameter so a caller writing many sidecars pays
+    /// the blocking `folderURL()` lookup once rather than per file.
+    func writeSidecar(name: String, content: String, in dir: URL) throws {
+        try content.data(using: .utf8)!
+            .write(to: dir.appendingPathComponent(name), options: .atomic)
     }
 
     /// Names already present in the folder. A file this device has not

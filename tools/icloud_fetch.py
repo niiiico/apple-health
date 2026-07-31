@@ -7,14 +7,25 @@ iCloud evicts local copies of files it considers cold, and
 ``tools/session_detail.py`` needs the HR-series CSVs to stay readable long
 after the delta itself was ingested.
 
-Files iCloud has not materialised locally appear as ``.<name>.icloud``
-placeholders. Reading the real path triggers the download and blocks until it
-completes; anything still unavailable is left for the next cycle rather than
-failing the run.
+**Eviction.** This container uses macOS *dataless* files: an evicted file keeps
+its real directory entry (``stat`` reports the true size, ``SF_DATALESS`` set)
+and reading it faults the data back in, blocking until the download finishes.
+That is what materialises a file here. The legacy ``.<name>.icloud`` plist
+representation is handled defensively by `resolve_placeholder` — no file in
+this container has used it — but note that in *that* representation the real
+name has no directory entry, so the copy raises `FileNotFoundError` and the
+file is simply retried next cycle rather than downloaded.
 
-Copies are ordered sidecars-first, then deltas oldest-first, so a partially
-copied inbox never contains a delta whose sidecars are missing (the same
+Copies are ordered sidecars-first, then deltas oldest-first, and each file is
+copied to a temp name and atomically renamed into place, so the inbox never
+contains a truncated file or a delta whose sidecars are missing (the same
 ordering rule the producer follows — see docs/delta-contract.md).
+
+**Contract with `sync_cycle`:** prints one copied filename per line to stdout
+and *nothing* to stdout when up to date; diagnostics go to stderr. Returns
+non-zero on a hard failure (missing source folder, failed copy). Never add a
+plain `print()` here — empty stdout is what tells `sync_cycle` there is
+nothing new.
 
 Usage::
 
@@ -24,6 +35,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 from collections.abc import Iterable
@@ -36,20 +48,25 @@ DEFAULT_INBOX = Path("/Volumes/nicolas-data/HealthData/healthsync-inbox")
 
 
 def resolve_placeholder(name: str) -> str:
-    """``.route-X.gpx.icloud`` → ``route-X.gpx``; any other name unchanged."""
+    """``.route-X.gpx.icloud`` → ``route-X.gpx``; any other name unchanged.
+
+    Returns the name unchanged when stripping would leave nothing, so a file
+    literally called ``.icloud`` cannot resolve to the empty string (which
+    would address the source directory itself).
+    """
     if name.startswith(".") and name.endswith(".icloud"):
-        return name[1:-len(".icloud")]
+        return name[1:-len(".icloud")] or name
     return name
 
 
 def plan_copies(names: Iterable[str], present: set[str]) -> list[str]:
     """Names to copy: sidecars first, then deltas oldest-first.
 
-    ``names`` is a raw directory listing (placeholders included); ``present``
-    is what the inbox already holds.
+    ``names`` is a listing of regular files (placeholders included);
+    ``present`` is what the inbox already holds.
     """
     fresh = {resolve_placeholder(n) for n in names} - present
-    fresh = {n for n in fresh if not n.startswith(".")}
+    fresh = {n for n in fresh if n and not n.startswith(".")}
     sidecars = sorted(n for n in fresh if not n.startswith("delta-"))
     deltas = sorted(n for n in fresh if n.startswith("delta-"))
     return sidecars + deltas
@@ -67,18 +84,32 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     args.inbox.mkdir(parents=True, exist_ok=True)
 
-    present = {p.name for p in args.inbox.iterdir() if not p.name.startswith(".")}
-    for name in plan_copies((p.name for p in args.source.iterdir()), present):
+    present = {p.name for p in args.inbox.iterdir() if p.is_file()}
+    names = [p.name for p in args.source.iterdir() if p.is_file()]
+    failed = 0
+    for name in plan_copies(names, present):
         src = args.source / name
+        # Copy to a dot-prefixed temp (excluded from `present` and from any
+        # future plan) and rename only once whole: an interrupted copy must
+        # never leave a truncated file that later runs would treat as done.
+        tmp = args.inbox / f".{name}.part"
         try:
-            # Reading the real path materialises an evicted file; the copy
-            # blocks until iCloud has finished downloading it.
-            shutil.copyfile(src, args.inbox / name)
-        except (OSError, TimeoutError) as exc:
-            print(f"not yet available, will retry: {name} ({exc})", file=sys.stderr)
+            # Reading a dataless file materialises it; this blocks until
+            # iCloud has finished downloading.
+            shutil.copyfile(src, tmp)
+            os.replace(tmp, args.inbox / name)
+        except FileNotFoundError:
+            # Legacy .icloud placeholder: no real directory entry to read.
+            tmp.unlink(missing_ok=True)
+            print(f"not materialised, will retry: {name}", file=sys.stderr)
+            continue
+        except OSError as exc:
+            tmp.unlink(missing_ok=True)
+            print(f"copy failed: {name} ({exc})", file=sys.stderr)
+            failed += 1
             continue
         print(name)
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

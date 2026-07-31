@@ -38,16 +38,27 @@ import vault_push  # noqa: E402
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Run one iCloud→DB→Vault sync cycle.")
     ap.add_argument("--inbox", type=Path, default=icloud_fetch.DEFAULT_INBOX)
+    ap.add_argument("--source", type=Path, default=None,
+                    help="iCloud folder to mirror from (default: the app's container)")
     ap.add_argument("--db", type=Path,
                     default=Path(__file__).resolve().parent.parent / "data/health.db")
     ap.add_argument("--force", action="store_true",
                     help="run ingest/render/push even when nothing new was fetched")
     args = ap.parse_args(argv)
 
+    fetch_args = ["--inbox", str(args.inbox)]
+    if args.source is not None:
+        fetch_args += ["--source", str(args.source)]
     fetched = io.StringIO()
     with contextlib.redirect_stdout(fetched):
-        icloud_fetch.main(["--inbox", str(args.inbox)])
+        rc = icloud_fetch.main(fetch_args)
     print(fetched.getvalue(), end="")
+    if rc != 0:
+        # A missing source folder or a failed copy must not look like a quiet,
+        # healthy cycle — that is precisely how the DB went stale for 17 days
+        # (ADR-004). Details are already on stderr.
+        print(f"fetch failed (rc={rc}) — skipping ingest")
+        return rc
     if not fetched.getvalue() and not args.force:
         print("nothing new")
         return 0
