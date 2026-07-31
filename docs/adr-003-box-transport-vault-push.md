@@ -42,7 +42,8 @@ automates ingest and the curated Vault push.**
   into the Vault, `_changelog.md` append, `_map.md` rows ensured).
 - Vault session files are **volatile rolling windows** (last 5 sessions per
   discipline, regenerated from `health.db` + inbox series on every push).
-  The durable archive stays in the repo (`data/sessions/`) and the DB.
+  The durable archive is `data/sessions/` on disk plus the DB — both
+  git-ignored, like all of `data/` (personal data never goes in git).
 
 ## Auth model
 
