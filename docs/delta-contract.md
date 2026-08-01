@@ -1,4 +1,4 @@
-# Delta file contract (v1)
+# Delta file contract (v1, v2)
 
 The interface between the on-device **HealthSync** app (producer) and the
 `ah-ingest` command (consumer). The app writes delta files into its iCloud
@@ -143,6 +143,7 @@ exactly once, atomically).
 | `workouts.deleted` | `DELETE WHERE uuid = ?` | `uuid` | no-op if absent |
 | `records.added` | `INSERT OR IGNORE` | `(type, start)` | dup ignored |
 | `daily_metrics.added` | additive upsert | `(day, type)` | **file-level** — see below |
+| `daily_metrics.added` *(schema 2)* | replacing upsert | `(day, type)` | content-idempotent — see [Backfill deltas](#backfill-deltas-schema-2) |
 | route GPX | `summarise_gpx` → `INSERT OR REPLACE` | `routes.filename` (`UNIQUE`) | re-summarise is safe |
 
 The additive upsert for `daily_metrics`:
@@ -162,7 +163,51 @@ ON CONFLICT(day, type) DO UPDATE SET
 Because this **adds**, it is *not* content-idempotent — applying the same delta
 twice would double-count. Idempotency therefore comes from the `applied_deltas`
 guard, **not** from the SQL. This is why deltas must be immutable and the
-producer must never re-emit a sample under a new anchor.
+producer must never re-emit a sample under a new anchor — *except* via a
+backfill delta, which is exactly the escape hatch for re-emitting.
+
+## Backfill deltas (schema 2)
+
+A normal delta reports "samples since the anchor", so its day buckets are
+partial and must be added. That makes it impossible to re-ship a day the DB
+already holds. A **backfill delta** inverts that: the producer re-queries a
+closed date range *by date, ignoring anchors*, so each bucket covers a whole
+day and is authoritative. `ah-ingest` therefore **replaces** those `(day, type)`
+rows instead of adding to them.
+
+```jsonc
+{
+  "schema": 2,                              // MUST be 2 when "backfill" is present
+  "backfill": { "from": "2026-07-16", "to": "2026-07-28" },   // inclusive, local days
+  "anchor_seq": 11,
+  // ... workouts / records / daily_metrics exactly as in v1
+}
+```
+
+Rules, all enforced by `ah-ingest` *before* any write:
+
+- `schema: 2` and the `backfill` block imply each other; either alone is refused.
+  A schema-1 file carrying `backfill` would be merged **additively** by an older
+  consumer, silently double-counting — hence the version bump.
+- `to` MUST be strictly before today. A range covering today would be replaced
+  and then added to by that day's next incremental delta.
+- Every `daily_metrics` bucket MUST fall inside `[from, to]`.
+- The producer MUST NOT advance any anchor when writing a backfill (it consumes
+  a sequence number only), so the incremental stream is unaffected and the same
+  range can be backfilled repeatedly.
+
+Why this cannot duplicate:
+
+| Section | Why re-shipping is safe |
+|---------|-------------------------|
+| `workouts.added` | deduped on `uuid`, then on the natural key `(activity, start)` |
+| `records.added` | deduped on `(type, start, source)` |
+| `daily_metrics.added` | whole-day buckets **replace** the stored row |
+| route GPX | `INSERT OR REPLACE` on `routes.filename` |
+
+So a backfill delta is *content*-idempotent: applying it twice, under different
+filenames, leaves the same DB. That is the one place this contract does not
+depend on the `applied_deltas` guard.
 
 ## Deletions
 

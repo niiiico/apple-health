@@ -21,11 +21,56 @@ import argparse
 import json
 import sqlite3
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 from . import __version__, db, parse_gpx
 
 SCHEMA_VERSION = 1
+BACKFILL_SCHEMA_VERSION = 2
+SUPPORTED_SCHEMAS = {SCHEMA_VERSION, BACKFILL_SCHEMA_VERSION}
+
+
+def _validate_backfill(name: str, delta: dict) -> dict | None:
+    """Return the validated ``backfill`` block, or None for a normal delta.
+
+    Raises ``ValueError`` (before any write) rather than risk corrupting
+    aggregates, because the two daily merge modes are not interchangeable:
+    replacing with a partial bucket silently *loses* samples, and adding an
+    authoritative one silently double-counts.
+    """
+    backfill = delta.get("backfill")
+    schema = delta.get("schema")
+
+    if backfill is None:
+        if schema == BACKFILL_SCHEMA_VERSION:
+            raise ValueError(f"{name}: schema 2 requires a 'backfill' block")
+        return None
+    if schema != BACKFILL_SCHEMA_VERSION:
+        raise ValueError(
+            f"{name}: 'backfill' requires schema {BACKFILL_SCHEMA_VERSION}, got {schema!r}")
+
+    start, end = backfill.get("from"), backfill.get("to")
+    if not (isinstance(start, str) and isinstance(end, str)):
+        raise ValueError(f"{name}: backfill needs string 'from' and 'to' dates")
+    if start > end:
+        raise ValueError(f"{name}: backfill range is inverted ({start} > {end})")
+
+    # Only closed days. A backfill covering today would be replaced-then-added-to
+    # by the next incremental delta for the same day, double-counting it.
+    today = date.today().isoformat()
+    if end >= today:
+        raise ValueError(
+            f"{name}: backfill must end before today ({end} >= {today}); "
+            "only complete days can be authoritative")
+
+    outside = sorted({d["day"] for d in delta.get("daily_metrics", {}).get("added", [])
+                      if not start <= d["day"] <= end})
+    if outside:
+        raise ValueError(
+            f"{name}: daily_metrics outside the declared backfill range "
+            f"{start}..{end}: {', '.join(outside[:5])}")
+    return backfill
 
 
 @dataclass
@@ -125,6 +170,36 @@ def _merge_records(conn: sqlite3.Connection, section: dict) -> int:
     return inserted
 
 
+def _replace_daily(conn: sqlite3.Connection, section: dict) -> int:
+    """Overwrite whole-day buckets, for backfill deltas (schema 2).
+
+    A backfill bucket is authoritative for its entire day — the producer
+    re-queried the day from scratch rather than reporting samples since an
+    anchor — so it *replaces* any stored row instead of adding to it. That is
+    what makes a backfill safe to ship for days the DB already covers, and it
+    is content-idempotent: applying the same backfill twice is a no-op.
+    """
+    rows = section.get("added", [])
+    for d in rows:
+        count, ssum = d["count"], d["sum"]
+        conn.execute(
+            """
+            INSERT INTO daily_metrics (day, type, unit, count, sum, min, max, avg)
+            VALUES (?,?,?,?,?,?,?,?)
+            ON CONFLICT(day, type) DO UPDATE SET
+                count = excluded.count,
+                sum   = excluded.sum,
+                min   = excluded.min,
+                max   = excluded.max,
+                unit  = excluded.unit,
+                avg   = excluded.avg
+            """,
+            (d["day"], d["type"], d.get("unit"), count, ssum,
+             d.get("min"), d.get("max"), ssum / count if count else None),
+        )
+    return len(rows)
+
+
 def _merge_daily(conn: sqlite3.Connection, section: dict) -> int:
     """Additively merge partial per-(day,type) buckets into ``daily_metrics``.
 
@@ -184,13 +259,17 @@ def apply_delta(conn: sqlite3.Connection, path: Path) -> dict[str, int]:
     """
     delta = json.loads(path.read_text())
     schema = delta.get("schema")
-    if schema != SCHEMA_VERSION:
+    if schema not in SUPPORTED_SCHEMAS:
         raise ValueError(f"{path.name}: unsupported delta schema {schema!r}")
+
+    backfill = _validate_backfill(path.name, delta)
 
     with conn:  # one transaction: all-or-nothing, commits on success
         w_ins, w_del = _merge_workouts(conn, delta.get("workouts", {}))
         n_rec = _merge_records(conn, delta.get("records", {}))
-        n_daily = _merge_daily(conn, delta.get("daily_metrics", {}))
+        daily = delta.get("daily_metrics", {})
+        n_daily = (_replace_daily(conn, daily) if backfill
+                   else _merge_daily(conn, daily))
         n_routes = _merge_routes(conn, delta.get("workouts", {}), path.parent)
         conn.execute(
             "INSERT INTO applied_deltas "

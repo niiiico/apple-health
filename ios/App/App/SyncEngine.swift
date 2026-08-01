@@ -152,6 +152,146 @@ final class SyncEngine {
         return "HR backfill: \(written) written, \(present) already present, \(noHR) without HR."
     }
 
+    // MARK: - Range backfill
+
+    enum BackfillError: LocalizedError {
+        case rangeInverted
+        case rangeNotClosed
+        case beforeCutoff
+
+        var errorDescription: String? {
+            switch self {
+            case .rangeInverted: "The start date is after the end date."
+            case .rangeNotClosed:
+                "A backfill must end before today — only complete days can be authoritative."
+            case .beforeCutoff:
+                "That range predates the full export the database was built from; "
+                    + "it is already covered there."
+            }
+        }
+    }
+
+    /// Re-ship a closed date range, whatever the anchors have already consumed.
+    ///
+    /// This is the repair path for a window lost from the DB — e.g. anchors
+    /// advanced over days whose samples were never shipped, which the empty
+    /// delta path can do if HealthKit returns nothing because authorisation was
+    /// reset. Unlike `sync()` it queries by date instead of by anchor, and
+    /// **touches no anchor**, so the incremental stream is unaffected and a
+    /// backfill can be re-run as often as needed.
+    ///
+    /// Safe against duplication by construction: workouts and records dedupe on
+    /// the consumer by uuid / natural key, and the daily buckets here cover
+    /// whole days, so `ah-ingest` replaces rather than adds them (schema 2 —
+    /// see docs/delta-contract.md).
+    @discardableResult
+    func backfill(from: Date, to: Date) async throws -> String {
+        let cal = Calendar.current
+        let start = cal.startOfDay(for: from)
+        let end = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: to))!
+        guard start < end else { throw BackfillError.rangeInverted }
+        guard end <= cal.startOfDay(for: Date()) else { throw BackfillError.rangeNotClosed }
+        guard start >= cal.startOfDay(for: Self.bootstrapCutoff) else {
+            throw BackfillError.beforeCutoff
+        }
+
+        let seq = anchors.nextSeq
+        var delta = Delta(
+            generated_at: DateFormats.iso(Date()),
+            device: DeviceInfo.model,
+            app_version: DeviceInfo.appVersion,
+            anchor_seq: seq,
+            backfill: .init(from: DateFormats.day(start),
+                            to: DateFormats.day(cal.date(byAdding: .day, value: -1, to: end)!))
+        )
+        delta.schema = 2
+        var sidecars: [(name: String, content: String)] = []
+
+        let range = HKQuery.predicateForSamples(
+            withStart: start, end: end, options: .strictStartDate)
+
+        // --- Workouts (+ sidecars, same shape as an incremental delta) ---
+        let exporter = RouteExporter(store: store)
+        for case let w as HKWorkout in try await runRange(
+            type: HKObjectType.workoutType(), predicate: range) {
+            var routeFile: String? = nil
+            if let gpx = try? await exporter.gpx(for: w) {
+                let name = "route-\(w.uuid.uuidString).gpx"
+                sidecars.append((name: name, content: gpx))
+                routeFile = name
+            }
+            var hrFile: String? = nil
+            if let csv = try? await hrSeriesCSV(for: w), !csv.isEmpty {
+                let name = "hr-\(w.uuid.uuidString).csv"
+                sidecars.append((name: name, content: csv))
+                hrFile = name
+            }
+            delta.workouts.added.append(Self.makeWorkout(w, routeFile: routeFile, hrFile: hrFile))
+        }
+
+        // --- Sparse records ---
+        for q in HealthTypes.sparse {
+            for case let s as HKQuantitySample in try await runRange(
+                type: q.type, predicate: range) {
+                delta.records.added.append(.init(
+                    type: q.name,
+                    start: DateFormats.appleDate(s.startDate),
+                    value: s.quantity.doubleValue(for: q.unit),
+                    unit: q.unit.unitString,
+                    source: s.sourceRevision.source.name
+                ))
+            }
+        }
+
+        // --- Dense quantities → whole-day (authoritative) buckets ---
+        for q in HealthTypes.dense {
+            var buckets: [String: Delta.DailyBucket] = [:]
+            for case let s as HKQuantitySample in try await runRange(
+                type: q.type, predicate: range) {
+                let day = DateFormats.day(s.startDate)
+                let value = s.quantity.doubleValue(for: q.unit)
+                if buckets[day] != nil {
+                    buckets[day]!.add(value)
+                } else {
+                    buckets[day] = .init(day: day, type: q.name, unit: q.unit.unitString,
+                                         count: 1, sum: value, min: value, max: value)
+                }
+            }
+            delta.daily_metrics.added.append(contentsOf: buckets.values)
+        }
+
+        if delta.isEmpty {
+            // Nothing to replace: write no file and burn no sequence number, so
+            // the range can simply be retried.
+            return "Nothing found in that range."
+        }
+
+        try writer.write(delta: delta, sidecars: sidecars, seq: seq)
+        anchors.commitSeq(seq)   // sequence only — anchors deliberately untouched
+
+        return "Backfilled \(delta.workouts.added.count) workouts, "
+             + "\(delta.daily_metrics.added.count) metric-days, "
+             + "\(delta.records.added.count) records."
+    }
+
+    /// Non-anchored query over an explicit predicate.
+    private func runRange(type: HKSampleType,
+                          predicate: NSPredicate) async throws -> [HKSample] {
+        try await withCheckedThrowingContinuation { cont in
+            let q = HKSampleQuery(
+                sampleType: type,
+                predicate: predicate,
+                limit: HKObjectQueryNoLimit,
+                sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierStartDate,
+                                                   ascending: true)]
+            ) { _, samples, error in
+                if let error { cont.resume(throwing: error); return }
+                cont.resume(returning: samples ?? [])
+            }
+            store.execute(q)
+        }
+    }
+
     /// Every workout with `startDate >= bootstrapCutoff`, regardless of anchors.
     private func workoutsSinceCutoff() async throws -> [HKWorkout] {
         try await withCheckedThrowingContinuation { cont in

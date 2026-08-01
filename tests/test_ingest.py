@@ -213,3 +213,106 @@ def test_ensure_incremental_schema_adds_uuid(tmp_path):
     db.ensure_incremental_schema(conn)  # second call is a no-op
     cols = {row[1] for row in conn.execute("PRAGMA table_info(workouts)")}
     assert "uuid" in cols
+
+
+# --- backfill deltas (schema 2) -----------------------------------------------
+
+def _backfill(seq: int, start: str, end: str, **sections) -> dict:
+    """A schema-2 delta declaring authoritative coverage of [start, end]."""
+    d = _delta(seq, **sections)
+    d["schema"] = 2
+    d["backfill"] = {"from": start, "to": end}
+    return d
+
+
+def test_backfill_replaces_instead_of_adding(tmp_path):
+    """A backfill bucket overwrites a day the DB already partially holds."""
+    conn, inbox = _conn(tmp_path), tmp_path
+    _write_delta(inbox, "delta-20240301T120000Z-0001.json", _delta(
+        1, daily_metrics={"added": [_bucket(count=2, sum=260.0, min=120.0, max=140.0)]}))
+    ingest.ingest_dir(conn, inbox)
+
+    # Same day re-shipped as a whole-day authoritative aggregate.
+    _write_delta(inbox, "delta-20240305T120000Z-0002.json", _backfill(
+        2, "2024-03-01", "2024-03-01",
+        daily_metrics={"added": [_bucket(count=10, sum=1300.0, min=100.0, max=170.0)]}))
+    ingest.ingest_dir(conn, inbox)
+
+    row = conn.execute(
+        "select count, sum, min, max, avg from daily_metrics "
+        "where day='2024-03-01' and type='HeartRate'").fetchone()
+    assert row == (10, 1300.0, 100.0, 170.0, 130.0)  # replaced, not 12/1560
+
+
+def test_backfill_is_content_idempotent(tmp_path):
+    """Re-applying the same backfill under a new filename changes nothing."""
+    conn, inbox = _conn(tmp_path), tmp_path
+    for name in ("delta-20240305T120000Z-0001.json", "delta-20240306T120000Z-0002.json"):
+        _write_delta(inbox, name, _backfill(
+            1, "2024-03-01", "2024-03-01",
+            workouts={"added": [_workout()], "deleted": []},
+            daily_metrics={"added": [_bucket(count=10, sum=1300.0)]}))
+        ingest.ingest_dir(conn, inbox)
+
+    assert conn.execute("select count(*) from workouts").fetchone()[0] == 1
+    assert conn.execute(
+        "select count from daily_metrics where day='2024-03-01'").fetchone()[0] == 10
+
+
+def test_backfill_rejects_range_including_today(tmp_path):
+    """Today is still open, so it can never be authoritative."""
+    from datetime import date
+    conn, inbox = _conn(tmp_path), tmp_path
+    today = date.today().isoformat()
+    _write_delta(inbox, "delta-20240305T120000Z-0001.json",
+                 _backfill(1, today, today,
+                           daily_metrics={"added": [_bucket(day=today)]}))
+    with pytest.raises(ValueError, match="must end before today"):
+        ingest.ingest_dir(conn, inbox)
+
+
+def test_backfill_rejects_bucket_outside_declared_range(tmp_path):
+    conn, inbox = _conn(tmp_path), tmp_path
+    _write_delta(inbox, "delta-20240305T120000Z-0001.json", _backfill(
+        1, "2024-03-01", "2024-03-02",
+        daily_metrics={"added": [_bucket(day="2024-03-09")]}))
+    with pytest.raises(ValueError, match="outside the declared backfill range"):
+        ingest.ingest_dir(conn, inbox)
+
+
+def test_backfill_block_requires_schema_2(tmp_path):
+    """A schema-1 file carrying 'backfill' would be merged additively by an
+    older ingest, so it must be refused outright."""
+    conn, inbox = _conn(tmp_path), tmp_path
+    d = _delta(1, daily_metrics={"added": [_bucket()]})
+    d["backfill"] = {"from": "2024-03-01", "to": "2024-03-01"}
+    _write_delta(inbox, "delta-20240305T120000Z-0001.json", d)
+    with pytest.raises(ValueError, match="requires schema 2"):
+        ingest.ingest_dir(conn, inbox)
+
+
+def test_schema_2_requires_backfill_block(tmp_path):
+    conn, inbox = _conn(tmp_path), tmp_path
+    d = _delta(1, daily_metrics={"added": [_bucket()]})
+    d["schema"] = 2
+    _write_delta(inbox, "delta-20240305T120000Z-0001.json", d)
+    with pytest.raises(ValueError, match="requires a 'backfill' block"):
+        ingest.ingest_dir(conn, inbox)
+
+
+def test_normal_delta_after_backfill_still_adds(tmp_path):
+    """Backfill mode must not leak: a later incremental for an *uncovered*
+    day still merges additively."""
+    conn, inbox = _conn(tmp_path), tmp_path
+    _write_delta(inbox, "delta-20240305T120000Z-0001.json", _backfill(
+        1, "2024-03-01", "2024-03-01",
+        daily_metrics={"added": [_bucket(count=10, sum=1300.0)]}))
+    _write_delta(inbox, "delta-20240306T120000Z-0002.json", _delta(
+        2, daily_metrics={"added": [_bucket(day="2024-03-02", count=3, sum=400.0)],
+                          }))
+    _write_delta(inbox, "delta-20240307T120000Z-0003.json", _delta(
+        3, daily_metrics={"added": [_bucket(day="2024-03-02", count=1, sum=100.0)]}))
+    ingest.ingest_dir(conn, inbox)
+
+    assert conn.execute(
+        "select count, sum from daily_metrics where day='2024-03-02'").fetchone() == (4, 500.0)

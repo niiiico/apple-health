@@ -22,6 +22,12 @@ reports/
 # Xcode (per-user state)
 xcuserdata/
 
+# Signed app exports and the local OTA server's TLS key/cert (machine-specific)
+distrib/
+tools/ota/ca-key.pem
+tools/ota/serve/*.pem
+tools/ota/serve/*.crt
+
 # OS
 .DS_Store
 tmp/

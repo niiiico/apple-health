@@ -12,6 +12,19 @@ struct Delta: Codable {
     var records = RecordSection()
     var daily_metrics = DailySection()
 
+    /// Set only on a backfill delta (schema 2), which re-ships a closed date
+    /// range queried from scratch rather than samples since an anchor. Its
+    /// `daily_metrics` buckets cover whole days and *replace* stored rows, so
+    /// a range the DB already holds can be re-shipped without double-counting.
+    /// Nil on a normal delta — `JSONEncoder` then omits the key entirely, so
+    /// incremental files stay byte-identical to schema 1.
+    var backfill: BackfillRange? = nil
+
+    struct BackfillRange: Codable {
+        let from: String   // YYYY-MM-DD, inclusive
+        let to: String     // YYYY-MM-DD, inclusive, must be before today
+    }
+
     /// True when the delta carries nothing worth publishing.
     var isEmpty: Bool {
         workouts.added.isEmpty && workouts.deleted.isEmpty &&
