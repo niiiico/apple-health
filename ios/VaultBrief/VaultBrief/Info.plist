@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Required, or HKHealthStore.requestAuthorization raises an NSException. -->
+	<key>NSHealthShareUsageDescription</key>
+	<string>Reads your workouts and heart-rate data to render your training brief.</string>
+	<!-- Catches the Box OAuth redirect (BoxConfig.redirectURI). -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>net.dev2.vaultbrief.box</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>vaultbrief</string>
+			</array>
+		</dict>
+	</array>
+	<!-- No iCloud container and no background modes: unlike HealthSync there is
+	     nothing to hand off and nothing to schedule. Refresh is user-initiated;
+	     a background task can be added later without changing the data flow. -->
+</dict>
+</plist>
