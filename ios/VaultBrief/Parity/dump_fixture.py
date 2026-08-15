@@ -17,11 +17,22 @@ def epoch(s):
     return datetime.strptime(s, "%Y-%m-%d %H:%M:%S %z").timestamp()
 
 
+def tz_offset(s):
+    """Seconds from GMT in effect when the workout started.
+
+    The wall-clock day the Vault prints comes from this offset, not from the
+    rendering device's zone — the Python side gets it for free by slicing the
+    stored string, so the fixture has to carry it for Swift to match.
+    """
+    return int(datetime.strptime(s, "%Y-%m-%d %H:%M:%S %z").utcoffset().total_seconds())
+
+
 def sess(r):
     return {
         "uuid": r["uuid"] or f"none-{r['id']}",
         "activity": r["activity"],
         "start": epoch(r["start"]),
+        "tzOffset": tz_offset(r["start"]),
         "startDay": r["start"][:10],
         "durationMin": r["duration_min"],
         "distanceKm": r["distance_km"],

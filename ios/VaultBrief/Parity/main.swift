@@ -7,6 +7,7 @@ struct Fixture: Decodable {
     struct S: Decodable {
         let uuid: String, activity: String
         let start: Double
+        let tzOffset: Int       // seconds from GMT in effect at `start`
         let durationMin: Double
         let distanceKm: Double?, energyKcal: Double?, avgHR: Double?, maxHR: Double?
     }
@@ -22,6 +23,7 @@ func toSession(_ s: Fixture.S) -> Session {
     Session(uuid: UUID(uuidString: s.uuid) ?? UUID(),
             activity: s.activity,
             start: Date(timeIntervalSince1970: s.start),
+            timeZone: TimeZone(secondsFromGMT: s.tzOffset) ?? .current,
             durationMin: s.durationMin,
             distanceKm: s.distanceKm, energyKcal: s.energyKcal,
             avgHR: s.avgHR, maxHR: s.maxHR)

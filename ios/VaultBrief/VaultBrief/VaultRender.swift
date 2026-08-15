@@ -9,6 +9,10 @@ struct Session {
     let uuid: UUID
     let activity: String        // normalised, HK prefix stripped ("Running", …)
     let start: Date
+    /// The zone the workout was *recorded* in, not the device's current one.
+    /// `start` is an absolute instant, so without this the wall-clock day is
+    /// unrecoverable once the phone changes zone — see `day(_:in:)`.
+    let timeZone: TimeZone
     let durationMin: Double
     let distanceKm: Double?
     let energyKcal: Double?
@@ -56,16 +60,22 @@ func mmss(_ seconds: Double) -> String {
     String(format: "%d:%02d", Int(seconds / 60), Int(seconds.truncatingRemainder(dividingBy: 60)))
 }
 
-private let isoDay: DateFormatter = {
-    let d = DateFormatter()
-    d.dateFormat = "yyyy-MM-dd"
-    // The Vault reads as local training days; a UTC formatter would file an
-    // evening workout under the next day.
-    d.locale = Locale(identifier: "en_US_POSIX")
-    return d
-}()
-
-func day(_ date: Date) -> String { isoDay.string(from: date) }
+/// The wall-clock day at `tz`, as `yyyy-MM-dd`.
+///
+/// The Vault reads as local training days, so the zone matters: a 19:08 run in
+/// Paris is a Paris-evening run even after the phone flies home to Tokyo.
+/// Formatting it in *any* ambient zone — UTC or the device's — files it under
+/// the next day. Pass the session's own `timeZone`; `.current` is right only
+/// for "today"-style dates, which are relative to where you are now.
+///
+/// Built from `Calendar` rather than a shared `DateFormatter` so there is no
+/// mutable formatter state to get the zone wrong under concurrent rendering.
+func day(_ date: Date, in tz: TimeZone = .current) -> String {
+    var cal = Calendar(identifier: .gregorian)
+    cal.timeZone = tz
+    let c = cal.dateComponents([.year, .month, .day], from: date)
+    return String(format: "%04d-%02d-%02d", c.year!, c.month!, c.day!)
+}
 
 // MARK: - Discipline files
 
@@ -81,7 +91,7 @@ private func sessionEntry(_ s: Session, series: [(Date, Double)]?) -> [String] {
     if let avg = s.avgHR, let mx = s.maxHR { parts.append("FC \(f(avg, 0))/\(f(mx, 0))") }
     if let kcal = s.energyKcal { parts.append("\(f(kcal, 0)) kcal") }
 
-    var lines = ["## \(day(s.start)) — " + parts.joined(separator: " / ")]
+    var lines = ["## \(day(s.start, in: s.timeZone)) — " + parts.joined(separator: " / ")]
     if let series, let sum = HRSummary(series: series) {
         let zones = Zones.all
             .map { "\($0.short) \(f(sum.zonePercent[$0.label] ?? 0, 0)) %" }
@@ -130,7 +140,7 @@ private func fmtWorkout(_ s: Session) -> String {
         parts.append("\(Int(perKm)):\(String(format: "%02d", Int((perKm.truncatingRemainder(dividingBy: 1) * 60).rounded())))/km")
     }
     if let avg = s.avgHR { parts.append("avg HR \(f(avg, 0))") }
-    return "- \(day(s.start)) **\(s.activity)** — \(parts.joined(separator: ", "))"
+    return "- \(day(s.start, in: s.timeZone)) **\(s.activity)** — \(parts.joined(separator: ", "))"
 }
 
 /// Week-to-date brief with prior-4-week context. `week`, `prior` and `recent`

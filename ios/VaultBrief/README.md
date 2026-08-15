@@ -52,6 +52,14 @@ ios/VaultBrief/Parity/check.sh [YYYY-MM-DD]
 ```
 
 Renders all four files with the Python pipeline and with the app's own Swift
-renderers, then diffs. Passes today against the live `health.db`; only the two
-provenance lines differ, and the check filters exactly those. Any other diff is
-a real divergence.
+renderers, then diffs. Only the two provenance lines differ, and the check
+filters exactly those. Any other diff is a real divergence.
+
+**Its coverage is only as wide as `health.db`.** The check first passed at a
+point where the DB stopped at 2026-07-14 — every workout in Japan, every offset
+`+0900`, identical to the Mac's own zone. It was therefore structurally unable to
+see that `day()` formatted in the *device's* zone rather than the workout's, and
+the bug surfaced only once a sync brought in `+0200` sessions recorded in France
+(they rendered a day late). Treat a green run as evidence about the data the DB
+happens to hold, not a blanket guarantee — when in doubt, check what zones and
+date range are actually in play.

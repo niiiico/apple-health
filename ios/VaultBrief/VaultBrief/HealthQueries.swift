@@ -66,10 +66,18 @@ struct HealthQueries {
         let hr = w.statistics(for: HKQuantityType(.heartRate))
         let bpm = HKUnit.count().unitDivided(by: .minute())
 
+        // HKMetadataKeyTimeZone is an IANA identifier the recording source
+        // sets (Apple Watch does). Absent it, the device's current zone is the
+        // best available guess — correct at home, wrong for a past trip, which
+        // is exactly why the value is preferred when present.
+        let tz = (w.metadata?[HKMetadataKeyTimeZone] as? String).flatMap(TimeZone.init(identifier:))
+            ?? .current
+
         return Session(
             uuid: w.uuid,
             activity: activityName(w.workoutActivityType),
             start: w.startDate,
+            timeZone: tz,
             durationMin: w.duration / 60,
             distanceKm: distance?.doubleValue(for: .meterUnit(with: .kilo)),
             energyKcal: energy?.doubleValue(for: .kilocalorie()),
