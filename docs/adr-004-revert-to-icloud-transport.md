@@ -1,7 +1,13 @@
 # ADR-004 — Revert the delta transport to iCloud Drive; keep the Vault push
 
-Date: 2026-07-31 · Status: accepted · Supersedes the transport half of
-[ADR-003](adr-003-box-transport-vault-push.md)
+Date: 2026-07-31 · Status: accepted, but **made moot** by
+[ADR-005](adr-005-on-device-processing.md) (2026-08-04) · Supersedes the
+transport half of [ADR-003](adr-003-box-transport-vault-push.md)
+
+> **Read [ADR-005](adr-005-on-device-processing.md) first.** This ADR settles
+> *which pipe* carries deltas from phone to Mac. ADR-005 removes the Mac from
+> the path entirely, so the question stops applying at VaultBrief cutover —
+> until then, the decision here is what runs.
 
 ## Context
 

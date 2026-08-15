@@ -1,8 +1,13 @@
 # ADR 002 — Incremental sync from the device
 
-- Status: accepted
+- Status: accepted — **topology superseded** by [ADR-005](adr-005-on-device-processing.md) (2026-08-04)
 - Date: 2026-06-26
 - Supersedes nothing; extends [ADR 001](adr-001-storage-model.md).
+
+> **The phone → iCloud → Mac topology below is superseded.** ADR-005 renders
+> the Vault on the phone and removes the Mac from the daily path. What this
+> ADR defines — anchored queries, delta files, `ah-ingest` idempotency — is
+> still what runs today, and is retired only at VaultBrief cutover.
 
 ## Context
 

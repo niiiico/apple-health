@@ -1,7 +1,9 @@
 # ADR-003 — Box as sync transport + automated Vault push
 
-Date: 2026-07-14 · Status: **partially superseded** by
-[ADR-004](adr-004-revert-to-icloud-transport.md) (2026-07-31)
+Date: 2026-07-14 · Status: **superseded** — the transport half by
+[ADR-004](adr-004-revert-to-icloud-transport.md) (2026-07-31), the Vault-push
+half by [ADR-005](adr-005-on-device-processing.md) (2026-08-04), which moves
+rendering and upload onto the phone
 
 > **The transport decision below was reverted.** It was implemented but never
 > activated, and iCloud Drive is the delta transport again. The *automated

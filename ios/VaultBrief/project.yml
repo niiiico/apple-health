@@ -1,0 +1,47 @@
+# XcodeGen spec for the VaultBrief app target (ADR-005).
+#
+# The generated VaultBrief.xcodeproj is committed alongside this file so the
+# project opens without XcodeGen installed; this spec stays the source of truth.
+# Regenerate after changing it:
+#
+#     cd ios/VaultBrief && xcodegen generate
+#
+# Settings mirror ios/App (HealthSync) so both apps sign and deploy identically.
+name: VaultBrief
+options:
+  bundleIdPrefix: net.dev2
+  deploymentTarget:
+    iOS: "27.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    DEVELOPMENT_TEAM: PU9QJY3H6Q
+    CODE_SIGN_STYLE: Automatic
+    TARGETED_DEVICE_FAMILY: "1,2"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  VaultBrief:
+    type: application
+    platform: iOS
+    sources:
+      - path: VaultBrief
+        excludes:
+          # Referenced by build settings, not compiled or copied as resources.
+          - "Info.plist"
+          - "VaultBrief.entitlements"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.dev2.vaultbrief
+        INFOPLIST_FILE: VaultBrief/Info.plist
+        GENERATE_INFOPLIST_FILE: "YES"
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+        # HealthKit capability. The iCloud entitlements HealthSync carries are
+        # deliberately absent — Box is the only destination (ADR-005).
+        CODE_SIGN_ENTITLEMENTS: VaultBrief/VaultBrief.entitlements
+    dependencies:
+      - sdk: HealthKit.framework
+      - sdk: AuthenticationServices.framework
