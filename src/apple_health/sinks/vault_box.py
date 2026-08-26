@@ -26,6 +26,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from ..config import repo_root
+from ..sources.hr_series import HRSeriesSource, InboxSeries, Series
 from .box_client import BoxClient
 from ..derive.zones import ZONES, summarize, thirds
 from .session_files import _mmss
@@ -55,13 +56,11 @@ _MAP_ROWS = {
 }
 
 
-def _hr_lines(csv: Path) -> list[str]:
-    """Compact zone + drift lines from an hr-<uuid>.csv series ('' if unusable)."""
-    vals = []
-    for line in csv.read_text().splitlines()[1:]:
-        ts, bpm = line.split(",")
-        vals.append((datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp(),
-                     float(bpm)))
+def _hr_lines(vals: Series) -> list[str]:
+    """Compact zone + drift lines from a heart-rate series ('' if unusable).
+
+    Takes samples rather than a path: see `sources.hr_series`.
+    """
     s = summarize(vals)
     if not s:
         return []
@@ -75,7 +74,8 @@ def _hr_lines(csv: Path) -> list[str]:
     return out
 
 
-def _session_entry(w: sqlite3.Row, inbox: Path) -> list[str]:
+def _session_entry(w: sqlite3.Row, inbox: Path,
+                   series: HRSeriesSource | None = None) -> list[str]:
     parts = []
     if w["distance_km"]:
         parts.append(f"{w['distance_km']:.2f} km")
@@ -88,17 +88,22 @@ def _session_entry(w: sqlite3.Row, inbox: Path) -> list[str]:
     if w["energy_kcal"]:
         parts.append(f"{w['energy_kcal']:.0f} kcal")
     lines = [f"## {w['start'][:10]} — " + " / ".join(parts)]
-    hr = inbox / f"hr-{w['uuid']}.csv" if w["uuid"] else None
-    if hr and hr.exists():
-        lines += _hr_lines(hr)
+    vals = (series or InboxSeries(inbox)).series_for(w["uuid"])
+    if vals:
+        lines += _hr_lines(vals)
     else:
         lines.append("- Séries FC indisponibles — avg/max seulement.")
     return lines + [""]
 
 
 def render_discipline(conn: sqlite3.Connection, activity: str, label: str,
-                      inbox: Path, today: date) -> str:
-    """Rolling session file for one discipline (most recent first)."""
+                      inbox: Path, today: date,
+                      series: HRSeriesSource | None = None) -> str:
+    """Rolling session file for one discipline (most recent first).
+
+    `series` chooses where heart-rate samples come from; the default reads the
+    inbox sidecars, which is what this did before `hr_samples` existed.
+    """
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT * FROM workouts WHERE activity = ? ORDER BY start DESC LIMIT ?",
@@ -118,7 +123,7 @@ def render_discipline(conn: sqlite3.Connection, activity: str, label: str,
         "",
     ]
     for w in rows:
-        lines += _session_entry(w, inbox)
+        lines += _session_entry(w, inbox, series)
     return "\n".join(lines).rstrip() + "\n"
 
 

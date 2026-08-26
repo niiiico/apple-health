@@ -31,6 +31,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from ..config import repo_root
+from ..sources.hr_series import HRSeriesSource, InboxSeries, Series
 from ..derive.zones import ZONES, summarize, thirds
 
 REPO = repo_root()
@@ -90,12 +91,12 @@ def km_splits(gpx: Path) -> list[tuple[str, float, float]]:
     return splits
 
 
-def hr_sections(csv: Path) -> list[str]:
-    """Zone table + drift lines from an ``hr-<uuid>.csv`` series."""
-    vals: list[tuple[float, float]] = []
-    for line in csv.read_text().splitlines()[1:]:
-        ts, bpm = line.split(",")
-        vals.append((datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp(), float(bpm)))
+def hr_sections(vals: Series) -> list[str]:
+    """Zone table + drift lines from a heart-rate series.
+
+    Takes samples rather than a path so the caller decides where they came
+    from — the inbox sidecars or `hr_samples`. See `sources.hr_series`.
+    """
     s = summarize(vals)
     if not s:
         return []
@@ -111,7 +112,8 @@ def hr_sections(csv: Path) -> list[str]:
     return lines + [""]
 
 
-def workout_section(w: sqlite3.Row, inbox: Path) -> list[str]:
+def workout_section(w: sqlite3.Row, inbox: Path,
+                    series: HRSeriesSource | None = None) -> list[str]:
     parts = []
     if w["distance_km"]:
         parts.append(f"{w['distance_km']:.2f} km")
@@ -125,9 +127,9 @@ def workout_section(w: sqlite3.Row, inbox: Path) -> list[str]:
         parts.append(f"{w['energy_kcal']:.0f} kcal")
     lines = [f"## {w['activity']} {w['start'][11:16]} — " + ", ".join(parts), ""]
 
-    hr = inbox / f"hr-{w['uuid']}.csv" if w["uuid"] else None
-    if hr and hr.exists():
-        lines += hr_sections(hr)
+    vals = (series or InboxSeries(inbox)).series_for(w["uuid"])
+    if vals:
+        lines += hr_sections(vals)
     else:
         lines += ["_Séries FC absentes de l'inbox (backfill « HR series » à lancer dans l'app ?) — avg/max seulement._", ""]
 
@@ -142,8 +144,13 @@ def workout_section(w: sqlite3.Row, inbox: Path) -> list[str]:
 
 
 def render_range(conn: sqlite3.Connection, inbox: Path, outdir: Path,
-                 since: date, until: date) -> list[Path]:
-    """Write one file per day having workouts in [since, until]; returns paths."""
+                 since: date, until: date,
+                 series: HRSeriesSource | None = None) -> list[Path]:
+    """Write one file per day having workouts in [since, until]; returns paths.
+
+    `series` chooses where heart-rate samples come from; the default reads the
+    inbox sidecars, which is what this did before `hr_samples` existed.
+    """
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT * FROM workouts WHERE start >= ? AND start < ? ORDER BY start",
@@ -157,7 +164,7 @@ def render_range(conn: sqlite3.Connection, inbox: Path, outdir: Path,
     for day, ws in sorted(days.items()):
         lines = [f"# Séances {day}", ""]
         for w in ws:
-            lines += workout_section(w, inbox)
+            lines += workout_section(w, inbox, series)
         zone_hdr = " · ".join(z[0] for z in ZONES)
         lines += [f"> Zones (bpm) : {zone_hdr}. Sources : health.db + inbox HealthSync.", ""]
         path = outdir / f"{day}.md"

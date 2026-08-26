@@ -121,6 +121,28 @@ queue is the same organ.
 
 **h. No thresholds in the query layer.** Brevity is the renderer's concern.
 
+## Sequencing the cutover
+
+The readers and the writer move independently, and in that order they are safe;
+reversed, they are not.
+
+1. **Reader seam** *(done)* — `sources/hr_series.py` provides samples from
+   either the inbox sidecars or `hr_samples`, and both renderers take a provider
+   instead of parsing a CSV. Verified byte-identical on real data across three
+   Vault files and twenty-one session files.
+2. **Writer cutover** *(not done)* — `ah-ingest` still writes SQLite only, so
+   Postgres is a snapshot taken at migration time. **Flipping the readers to
+   Postgres before this would silently drop the HR series of every session
+   synced since**, which is the same class of failure as the coverage gap:
+   plausible output, quietly missing data.
+3. **Retire the inbox path** — only once (2) holds, at which point `--inbox`
+   leaves the tool signatures and the sidecars stop needing to outlive their
+   deltas.
+
+The default provider therefore stays `InboxSeries` and there is deliberately no
+flag to change it: a switch that produces stale renders on demand is a footgun,
+not a feature.
+
 ## Consequences
 
 - **The 002–005 argument ends without any of them being wrong.** Each was a
