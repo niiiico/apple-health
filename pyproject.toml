@@ -5,6 +5,7 @@ description = "Parse an Apple Health export into a queryable SQLite dataset and 
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "psycopg[binary]>=3.2",
     "requests>=2.34.2",
 ]
 
