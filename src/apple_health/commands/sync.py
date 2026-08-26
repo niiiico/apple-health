@@ -12,9 +12,13 @@ Chains the pipeline in-process (no shell):
 The transport is iCloud (ADR-004); Box remains only as the *destination* of
 step 4, the Claude Vault.
 
-Steps 2–4 are skipped when step 1 fetched nothing (pass ``--force`` to run
+Steps 2–5 are skipped when step 1 fetched nothing (pass ``--force`` to run
 them anyway). Designed for launchd (see ``tools/launchd/``) but safe to run by
 hand; every step is idempotent.
+
+Exit codes: ``0`` all well, ``1`` the data path failed (fetch or the Postgres
+sync — coverage will read stale until it is fixed), ``2`` the data is current
+but the Vault delivery step did not run.
 
 Usage::
 
@@ -89,7 +93,18 @@ def main(argv: list[str] | None = None) -> int:
     since = (date.today() - timedelta(days=14)).isoformat()
     session_files.main(["--db", str(args.db), "--inbox", str(args.inbox),
                          "--since", since])
-    vault_box.main(["--db", str(args.db), "--inbox", str(args.inbox)])
+    # The Vault is a sink (ADR-006): its failure means the phone stops seeing
+    # fresh briefs, not that the data is lost — everything above this line has
+    # already landed. So it reports rather than raising: a traceback every 30
+    # minutes under launchd is noise that would hide a real failure, and an
+    # unhandled exception here would make a successful data run look broken.
+    try:
+        vault_box.main(["--db", str(args.db), "--inbox", str(args.inbox)])
+    except Exception as exc:
+        print(f"vault push failed: {exc}", file=sys.stderr)
+        print("data is safe — SQLite and Postgres are current; only the Box "
+              "delivery step is behind", file=sys.stderr)
+        return 2
     return 0
 
 
