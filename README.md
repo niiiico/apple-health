@@ -126,6 +126,35 @@ Deletions are only partly honoured: workout deletes apply exactly, but deleted
 on delete) — an occasional full rebuild reconciles. This is consistent with the
 "DB is a disposable projection" stance in ADR-001.
 
+## Postgres store (ADR-006)
+
+The SQLite dataset is still the source of record. The Postgres store exists and
+is populated by a one-shot migration, which also recovers two things SQLite
+could not hold: the heart-rate series (from the `hr-<uuid>.csv` sidecars, so a
+session no longer needs an `--inbox` to render its zones) and **coverage** — the
+instant each delta had observed HealthKit through, read from its `generated_at`.
+
+```bash
+# A throwaway server is enough to try it; the estate's is postgres.int.dev2.net
+docker run --rm -d --name ah-pg -e POSTGRES_PASSWORD=test \
+    -e POSTGRES_DB=apple_health -e POSTGRES_USER=apple_health \
+    -p 55433:5432 postgres:17-alpine
+export APPLE_HEALTH_DSN=postgresql://apple_health:test@localhost:55433/apple_health
+
+uv run --extra pg ah-migrate --dry-run    # counts, then rolls back
+uv run --extra pg ah-migrate              # commits
+```
+
+The migration is one-shot and refuses a populated target rather than doubling
+rows. `RunningCadence` is deliberately not carried over: it is a derivation
+(speed ÷ stride), the schema's `NOT NULL` on `sum` is what refuses to store it,
+and the formula lives in `derive/cadence.py`.
+
+Why coverage is a recorded fact rather than `max(started_at)`: on the current
+data the last workout starts at `2026-08-25T03:46Z` while HealthKit was observed
+through `2026-08-25T10:14Z` — six hours apart. Asking "do you cover the 25th?"
+correctly warns, because in JST that day was not over when the sync ran.
+
 ## Race archive
 
 The DB keeps only *daily* HR aggregates, so per-race detail (heart-rate by leg,

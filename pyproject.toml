@@ -28,6 +28,7 @@ ah-html = "apple_health.sinks.html_report:main"
 ah-sessions = "apple_health.sinks.session_files:main"
 ah-vault = "apple_health.sinks.vault_box:main"
 ah-races = "apple_health.sinks.race_files:main"
+ah-migrate = "apple_health.commands.migrate:main"
 
 [build-system]
 requires = ["hatchling"]

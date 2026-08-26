@@ -27,6 +27,8 @@ bespoke logic here.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, time as clock_time, tzinfo
 from types import TracebackType
@@ -335,6 +337,20 @@ class Store:
                 cursor.execute(
                     "INSERT INTO schema_version (version) VALUES (%s)", (version,)
                 )
+        self._connection.commit()
+
+    @contextmanager
+    def cursor(self) -> Iterator[object]:
+        """Yield a cursor on the open connection.
+
+        Deliberately thin: the SQLite→Postgres migration is a one-shot and its
+        SQL belongs to it, not as permanent API here.
+        """
+        with self._connection.cursor() as cur:
+            yield cur
+
+    def commit(self) -> None:
+        """Commit the open transaction."""
         self._connection.commit()
 
     def coverage(
