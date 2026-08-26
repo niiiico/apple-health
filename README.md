@@ -134,15 +134,28 @@ could not hold: the heart-rate series (from the `hr-<uuid>.csv` sidecars, so a
 session no longer needs an `--inbox` to render its zones) and **coverage** — the
 instant each delta had observed HealthKit through, read from its `generated_at`.
 
+The estate's server is `postgres.int.dev2.net` (ras12, PostgreSQL 17.6), where
+the dataset now lives:
+
 ```bash
-# A throwaway server is enough to try it; the estate's is postgres.int.dev2.net
+export APPLE_HEALTH_DSN='postgresql://apple_health@postgres.int.dev2.net:5432/apple_health?sslmode=require'
+
+uv run --extra pg ah-migrate --dry-run    # counts, then rolls back
+uv run --extra pg ah-migrate              # commits
+```
+
+The password is **not** part of the DSN — it comes from `APPLE_HEALTH_DB_PASSWORD`
+or, failing that, `~/.config/apple-health/db-password` (0600, beside the Box
+token store), so an unattended run needs only the DSN and nothing lands in a
+manifest, `ps`, or shell history. Provisioning is `tmp/provision-pg.sh`.
+
+A throwaway server is enough to try any of this without touching the estate:
+
+```bash
 docker run --rm -d --name ah-pg -e POSTGRES_PASSWORD=test \
     -e POSTGRES_DB=apple_health -e POSTGRES_USER=apple_health \
     -p 55433:5432 postgres:17-alpine
 export APPLE_HEALTH_DSN=postgresql://apple_health:test@localhost:55433/apple_health
-
-uv run --extra pg ah-migrate --dry-run    # counts, then rolls back
-uv run --extra pg ah-migrate              # commits
 ```
 
 The migration is one-shot and refuses a populated target rather than doubling

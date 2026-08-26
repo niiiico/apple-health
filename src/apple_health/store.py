@@ -31,6 +31,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, time as clock_time, tzinfo
+from pathlib import Path
 from types import TracebackType
 
 DEFAULT_DSN = "postgresql://apple_health@localhost:5432/apple_health"
@@ -42,6 +43,21 @@ _MIGRATION_LOCK = 5_512_884
 # Kept out of the DSN so it cannot reach committed manifests, shell history or
 # a process listing.
 _PASSWORD_VAR = "APPLE_HEALTH_DB_PASSWORD"
+
+# Read when the variable is unset, so an unattended run (launchd, a cron pod)
+# needs only a DSN. Same directory as the Box token store, same 0600 posture.
+_PASSWORD_FILE = Path.home() / ".config/apple-health/db-password"
+
+
+def _password() -> str | None:
+    """The database password, from the environment or the on-disk store."""
+    from_env = os.environ.get(_PASSWORD_VAR)
+    if from_env:
+        return from_env
+    try:
+        return _PASSWORD_FILE.read_text().strip() or None
+    except OSError:
+        return None
 
 _MIGRATIONS: tuple[str, ...] = (
     # 1 — sessions. `timestamptz` stores the instant; `tz_name` recovers the
@@ -291,7 +307,7 @@ class Store:
         from psycopg.rows import dict_row
 
         self._dsn = dsn or os.environ.get("APPLE_HEALTH_DSN") or DEFAULT_DSN
-        password = os.environ.get(_PASSWORD_VAR) or None
+        password = _password()
         self._connection = psycopg.connect(
             self._dsn,
             row_factory=dict_row,
