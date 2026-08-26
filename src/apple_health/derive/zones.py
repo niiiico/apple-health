@@ -103,3 +103,41 @@ def thirds(vals: list[tuple[object, float]]) -> list[tuple[str, float, float]]:
         if hrs:
             out.append((label, sum(hrs) / len(hrs), max(hrs)))
     return out
+
+
+def zone_durations(vals: list[tuple[float, float]]) -> dict[str, float] | None:
+    """Seconds spent in each zone, from a timestamped series.
+
+    Percentages answer "how was this session distributed"; durations answer
+    "did I get my twenty minutes at threshold", which is the question a training
+    plan actually asks. Claude's own training journal records both, and only the
+    percentages have ever come from this pipeline — the durations were typed in
+    by hand off the watch.
+
+    Each sample is credited with the gap to the *next* one, so an irregular
+    series is measured rather than assumed. The final sample is credited with
+    the median gap, since there is no next one to measure against. Gaps beyond
+    ten times the median are treated as pauses and credited the median instead:
+    a stop at the side of the pool is not forty minutes in Z1.
+
+    Args:
+        vals: `(epoch_seconds, bpm)` pairs, sorted internally.
+
+    Returns:
+        Zone label → seconds, or None for an empty series.
+    """
+    if not vals:
+        return None
+    vals = sorted(vals)
+    if len(vals) == 1:
+        return {z[0]: 0.0 for z in ZONES}
+
+    gaps = [b[0] - a[0] for a, b in zip(vals, vals[1:])]
+    ordered = sorted(gaps)
+    median = ordered[len(ordered) // 2] or 1.0
+    cap = median * 10
+
+    out = {z[0]: 0.0 for z in ZONES}
+    for (_, bpm), gap in zip(vals, gaps + [median]):
+        out[zone_of(bpm)] += median if gap > cap else gap
+    return out
