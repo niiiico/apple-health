@@ -31,7 +31,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from ..config import repo_root
-from ..sources.hr_series import HRSeriesSource, InboxSeries, Series
+from ..sources.hr_series import HRSeriesSource, Series, default_source
 from ..derive.zones import ZONES, summarize, thirds
 
 REPO = repo_root()
@@ -127,7 +127,7 @@ def workout_section(w: sqlite3.Row, inbox: Path,
         parts.append(f"{w['energy_kcal']:.0f} kcal")
     lines = [f"## {w['activity']} {w['start'][11:16]} — " + ", ".join(parts), ""]
 
-    vals = (series or InboxSeries(inbox)).series_for(w["uuid"])
+    vals = (series or default_source(inbox)).series_for(w["uuid"])
     if vals:
         lines += hr_sections(vals)
     else:

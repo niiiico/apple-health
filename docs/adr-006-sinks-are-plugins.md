@@ -130,18 +130,23 @@ reversed, they are not.
    either the inbox sidecars or `hr_samples`, and both renderers take a provider
    instead of parsing a CSV. Verified byte-identical on real data across three
    Vault files and twenty-one session files.
-2. **Writer cutover** *(not done)* — `ah-ingest` still writes SQLite only, so
-   Postgres is a snapshot taken at migration time. **Flipping the readers to
-   Postgres before this would silently drop the HR series of every session
-   synced since**, which is the same class of failure as the coverage gap:
-   plausible output, quietly missing data.
-3. **Retire the inbox path** — only once (2) holds, at which point `--inbox`
-   leaves the tool signatures and the sidecars stop needing to outlive their
-   deltas.
+2. **Writer cutover** *(done)* — `ah-pgsync` applies pending deltas to
+   Postgres with the same merge semantics as `sources.healthsync`, keyed on
+   `ingest_runs.ref` for per-file idempotency, and `ah-sync` runs it before
+   anything renders. Verified by replaying all sixteen deltas into an empty
+   database: 17,269 HR samples across 28 sessions and identical
+   count/sum/min/max on spot-checked days, matching what `ah-migrate` produced
+   from SQLite by a completely different path.
+3. **Readers prefer Postgres** *(done)* — `default_source()` returns
+   Postgres-with-inbox-behind-it when a DSN is configured. The fallback is
+   load-bearing rather than defensive: a workout `ah-pgsync` has not reached yet
+   still renders from its sidecar instead of losing its zones, so the answer is
+   never worse than the inbox-only behaviour it replaces.
 
-The default provider therefore stays `InboxSeries` and there is deliberately no
-flag to change it: a switch that produces stale renders on demand is a footgun,
-not a feature.
+**`--inbox` does not disappear.** Route GPX still lives there, and only the
+heart-rate half moved. Claiming the parameter had gone would be the same kind of
+overstatement as "the zone model is defined once" was before the review caught
+it. Retiring it needs route points in the store, which nothing needs yet.
 
 ## Consequences
 

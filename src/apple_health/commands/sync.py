@@ -24,12 +24,14 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import os
 from datetime import date, timedelta
 from pathlib import Path
 
 from ..config import repo_root
 from ..sources import healthsync
 from ..sources import icloud
+from . import pgsync
 from ..sinks import session_files
 from ..sinks import vault_box
 
@@ -63,6 +65,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     healthsync.main(["--inbox", str(args.inbox), "--db", str(args.db)])
+    # Keep Postgres level with SQLite before anything renders: the readers now
+    # prefer it, and a store left behind would quietly render without zones.
+    if os.environ.get("APPLE_HEALTH_DSN"):
+        try:
+            pgsync.main(["--inbox", str(args.inbox)])
+        except Exception as exc:
+            print(f"postgres sync failed ({exc}); renderers fall back to the inbox")
     since = (date.today() - timedelta(days=14)).isoformat()
     session_files.main(["--db", str(args.db), "--inbox", str(args.inbox),
                          "--since", since])

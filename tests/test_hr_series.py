@@ -40,3 +40,46 @@ def test_header_only_sidecar_yields_an_empty_series(tmp_path):
     # Distinct from missing: the file exists and recorded nothing.
     _write(tmp_path, UUID, "")
     assert InboxSeries(tmp_path).series_for(UUID) == []
+
+
+class _Fake:
+    """A source with a fixed answer, for exercising the fallback order."""
+
+    def __init__(self, answer):
+        self.answer = answer
+        self.asked = 0
+
+    def series_for(self, uuid):
+        self.asked += 1
+        return self.answer
+
+
+def test_fallback_prefers_the_first_source_that_has_a_series():
+    from apple_health.sources.hr_series import FallbackSeries
+
+    primary, secondary = _Fake([(1.0, 120.0)]), _Fake([(2.0, 130.0)])
+    assert FallbackSeries(primary, secondary).series_for("u") == [(1.0, 120.0)]
+    assert secondary.asked == 0, "must not consult the fallback when the first answered"
+
+
+def test_fallback_reaches_past_a_source_with_nothing():
+    # The case that matters: a workout ah-pgsync has not reached yet still
+    # renders from its sidecar instead of silently losing its zones.
+    from apple_health.sources.hr_series import FallbackSeries
+
+    assert FallbackSeries(_Fake(None), _Fake([(2.0, 130.0)])).series_for("u") == [(2.0, 130.0)]
+
+
+def test_fallback_distinguishes_empty_from_missing():
+    # An empty series is an answer: the file existed and recorded nothing.
+    from apple_health.sources.hr_series import FallbackSeries
+
+    secondary = _Fake([(2.0, 130.0)])
+    assert FallbackSeries(_Fake([]), secondary).series_for("u") == []
+    assert secondary.asked == 0
+
+
+def test_no_source_has_it():
+    from apple_health.sources.hr_series import FallbackSeries
+
+    assert FallbackSeries(_Fake(None), _Fake(None)).series_for("u") is None

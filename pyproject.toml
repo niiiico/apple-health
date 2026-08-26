@@ -29,6 +29,7 @@ ah-sessions = "apple_health.sinks.session_files:main"
 ah-vault = "apple_health.sinks.vault_box:main"
 ah-races = "apple_health.sinks.race_files:main"
 ah-migrate = "apple_health.commands.migrate:main"
+ah-pgsync = "apple_health.commands.pgsync:main"
 
 [build-system]
 requires = ["hatchling"]

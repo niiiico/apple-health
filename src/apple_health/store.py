@@ -49,8 +49,23 @@ _PASSWORD_VAR = "APPLE_HEALTH_DB_PASSWORD"
 _PASSWORD_FILE = Path.home() / ".config/apple-health/db-password"
 
 
-def _password() -> str | None:
-    """The database password, from the environment or the on-disk store."""
+def _password(dsn: str) -> str | None:
+    """The database password, unless the DSN already carries one.
+
+    Deferring to the DSN matters: psycopg's explicit `password` argument wins
+    over the connection string, so returning one unconditionally would silently
+    override an inline password — pointing a throwaway container's DSN at the
+    production password and failing with an authentication error that names
+    neither.
+    """
+    from psycopg.conninfo import conninfo_to_dict
+
+    try:
+        if conninfo_to_dict(dsn).get("password"):
+            return None
+    except Exception:  # unparseable DSN — let psycopg raise the real error
+        pass
+
     from_env = os.environ.get(_PASSWORD_VAR)
     if from_env:
         return from_env
@@ -307,7 +322,7 @@ class Store:
         from psycopg.rows import dict_row
 
         self._dsn = dsn or os.environ.get("APPLE_HEALTH_DSN") or DEFAULT_DSN
-        password = _password()
+        password = _password(self._dsn)
         self._connection = psycopg.connect(
             self._dsn,
             row_factory=dict_row,

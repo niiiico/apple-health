@@ -80,3 +80,45 @@ class StoreSeries:
         if not rows:
             return None
         return [(r["t"].timestamp(), float(r["bpm"])) for r in rows]
+
+
+class FallbackSeries:
+    """Try each source in turn and take the first that has a series.
+
+    Postgres first, inbox second. That ordering means a workout `ah-pgsync` has
+    not reached yet still renders from its sidecar rather than losing its zones
+    — the failure that kept the reader default on the inbox until now. It also
+    means the answer is never *worse* than the inbox-only behaviour it replaces.
+    """
+
+    def __init__(self, *sources: HRSeriesSource) -> None:
+        self.sources = sources
+
+    def series_for(self, uuid: str | None) -> Series | None:
+        """First non-None series among the sources, or None if none has one."""
+        for source in self.sources:
+            series = source.series_for(uuid)
+            if series is not None:
+                return series
+        return None
+
+
+def default_source(inbox: Path) -> HRSeriesSource:
+    """The provider a command should use unless told otherwise.
+
+    Postgres-backed when a DSN is configured, with the inbox behind it; the
+    inbox alone when it is not. Connecting lazily here rather than at import
+    keeps every command that never reads a series free of the dependency.
+    """
+    import os
+
+    if not os.environ.get("APPLE_HEALTH_DSN"):
+        return InboxSeries(inbox)
+    try:
+        from ..store import Store
+
+        return FallbackSeries(StoreSeries(Store()), InboxSeries(inbox))
+    except Exception as exc:  # unreachable server, missing driver, bad password
+        print(f"  ! Postgres unavailable ({exc.__class__.__name__}); reading HR series "
+              f"from the inbox")
+        return InboxSeries(inbox)

@@ -26,7 +26,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from ..config import repo_root
-from ..sources.hr_series import HRSeriesSource, InboxSeries, Series
+from ..sources.hr_series import HRSeriesSource, Series, default_source
 from .box_client import BoxClient
 from ..derive.zones import ZONES, summarize, thirds
 from .session_files import _mmss
@@ -88,7 +88,7 @@ def _session_entry(w: sqlite3.Row, inbox: Path,
     if w["energy_kcal"]:
         parts.append(f"{w['energy_kcal']:.0f} kcal")
     lines = [f"## {w['start'][:10]} — " + " / ".join(parts)]
-    vals = (series or InboxSeries(inbox)).series_for(w["uuid"])
+    vals = (series or default_source(inbox)).series_for(w["uuid"])
     if vals:
         lines += _hr_lines(vals)
     else:
