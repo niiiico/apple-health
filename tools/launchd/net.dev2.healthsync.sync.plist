@@ -17,6 +17,15 @@
         <string>/Volumes/nicolas-data/Repositories/apple-health</string>
         <string>ah-sync</string>
     </array>
+    <!-- Without this the sync runs but skips Postgres entirely (commands/sync.py
+         guards on it), the renderers fall back to the inbox, and coverage
+         silently freezes at the last successful instant. The password is not
+         here: store.py reads ~/.config/apple-health/db-password. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>APPLE_HEALTH_DSN</key>
+        <string>postgresql://apple_health@postgres.int.dev2.net:5432/apple_health?sslmode=require</string>
+    </dict>
     <key>StartInterval</key>
     <integer>1800</integer>
     <key>RunAtLoad</key>
