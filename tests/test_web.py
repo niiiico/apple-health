@@ -131,3 +131,73 @@ def test_notes_are_escaped_into_the_page():
                                  "max_hr": 171, "has_hr_series": True, "has_laps": False,
                                  "note": '<script>alert("x")</script>'}])
     assert "<script>alert" not in html and "&lt;script&gt;" in html
+
+
+# --- window navigation -------------------------------------------------------
+
+def test_the_window_defaults_to_the_recent_span():
+    from datetime import date, timedelta
+
+    start, end = web.window_for({}, 45)
+    assert end == date.today() and (end - start).days == 45
+
+
+def test_any_range_in_the_record_is_reachable():
+    # The page used to be pinned to a recent window, so the France block was
+    # unreachable from September. It is a view now, not the extent of the data.
+    from datetime import date
+
+    assert web.window_for({"from": ["2019-06-01"], "to": ["2019-06-30"]}, 45) == (
+        date(2019, 6, 1), date(2019, 6, 30))
+
+
+def test_a_reversed_range_is_swapped_rather_than_empty():
+    from datetime import date
+
+    assert web.window_for({"from": ["2026-08-26"], "to": ["2026-08-01"]}, 45) == (
+        date(2026, 8, 1), date(2026, 8, 26))
+
+
+def test_a_mistyped_date_falls_back_instead_of_erroring():
+    from datetime import date
+
+    start, end = web.window_for({"from": ["not-a-date"], "to": ["2026-08-26"]}, 10)
+    assert end == date(2026, 8, 26) and (end - start).days == 10
+
+
+# --- session detail ----------------------------------------------------------
+
+_DETAIL = {
+    "coverage": {"observed_through": "2026-08-26T09:54:01+00:00"},
+    "zone_model": {"source": "default"},
+    "session": {"id": 1, "date": "2026-08-25", "started_at": "2026-08-25T12:46:00+09:00",
+                "tz": "UTC+09:00", "activity": "Swimming", "distance_km": 1.65,
+                "duration_min": 47, "avg_hr": 139, "max_hr": 171, "energy_kcal": 369,
+                "note": None},
+    "hr": {"samples": 562, "avg": 140.0, "min": 78, "max": 171,
+           "zone_percent": {"Z1 <135": 35.8, "Z2 135-159": 52.7},
+           "zone_seconds": {"Z1 <135": 1041, "Z2 135-159": 1486},
+           "drift_thirds": [{"third": "1/3", "avg": 126.0, "max": 154}]},
+    "laps": None,
+}
+
+
+def test_the_detail_page_shows_durations_not_only_shares():
+    # "62 % in Z2" and "24 minutes in Z2" answer different questions, and a
+    # training plan asks the second one.
+    html = ui.render_session(_DETAIL)
+    assert "17:21" in html and "24:46" in html
+
+
+def test_a_default_zone_model_is_named_on_the_page():
+    assert "default" in ui.render_session(_DETAIL)
+
+
+def test_a_session_with_no_series_says_so_rather_than_showing_zeroes():
+    detail = {**_DETAIL, "hr": None}
+    html = ui.render_session(detail)
+    assert "No series recorded" in html and "different from a flat one" in html
+
+
+def test_an_unknown_session_renders_an_error_page():
+    assert "no workout with id 9" in ui.render_session({"error": "no workout with id 9"})

@@ -26,6 +26,7 @@ import http.server
 import json
 from datetime import date, datetime, timedelta
 from typing import Any, Callable
+from urllib.parse import parse_qs, urlparse
 
 from . import queries, ui
 from .store import Store
@@ -129,13 +130,36 @@ ACTIONS: dict[str, Callable[[Store, dict[str, Any]], dict[str, Any]]] = {
 }
 
 
-def render_page(store: Store, window_days: int = WINDOW_DAYS) -> str:
-    """The single page: coverage, zone models, periods, recent sessions."""
+def window_for(params: dict[str, list[str]], window_days: int) -> tuple[date, date]:
+    """The date range to show, from the query string or the default window.
+
+    Unparseable dates fall back rather than erroring: a mistyped URL should show
+    something, not a stack trace.
+    """
     today = date.today()
+    try:
+        end = date.fromisoformat(params["to"][0])
+    except (KeyError, IndexError, ValueError):
+        end = today
+    try:
+        start = date.fromisoformat(params["from"][0])
+    except (KeyError, IndexError, ValueError):
+        start = end - timedelta(days=window_days)
+    if start > end:
+        start, end = end, start
+    return start, end
+
+
+def render_page(store: Store, start: date, end: date) -> str:
+    """The index: coverage, window navigation, zone models, periods, sessions."""
     context = queries.context(store)
-    sessions = queries.list_sessions(
-        store, today - timedelta(days=window_days), today)["sessions"]
-    return ui.render(context, list(reversed(sessions)), window_days)
+    sessions = queries.list_sessions(store, start, end)["sessions"]
+    return ui.render(context, list(reversed(sessions)), start, end)
+
+
+def render_session_page(store: Store, workout_id: int) -> str:
+    """One session in full."""
+    return ui.render_session(queries.session_detail(store, workout_id))
 
 
 def handler_for(dsn: str | None, window_days: int = WINDOW_DAYS):
@@ -169,12 +193,22 @@ def handler_for(dsn: str | None, window_days: int = WINDOW_DAYS):
                     return self._json(503, {"ok": False, "error": str(exc)})
                 return self._json(200, {"ok": True, "observed_through":
                                         observed.isoformat() if observed else None})
-            if self.path != "/":
+            parsed = urlparse(self.path)
+            if parsed.path.startswith("/session/"):
+                try:
+                    workout_id = int(parsed.path.removeprefix("/session/"))
+                except ValueError:
+                    return self._send(404, b"not found", "text/plain; charset=utf-8")
+                render = lambda store: render_session_page(store, workout_id)  # noqa: E731
+            elif parsed.path == "/":
+                start, end = window_for(parse_qs(parsed.query), window_days)
+                render = lambda store: render_page(store, start, end)  # noqa: E731
+            else:
                 return self._send(404, b"not found", "text/plain; charset=utf-8")
             try:
                 store = Store(dsn)
                 try:
-                    page = render_page(store, window_days)
+                    page = render(store)
                 finally:
                     store.close()
             except Exception as exc:
@@ -182,7 +216,7 @@ def handler_for(dsn: str | None, window_days: int = WINDOW_DAYS):
             self._send(200, page.encode(), "text/html; charset=utf-8")
 
         def do_POST(self):  # noqa: N802
-            action = ACTIONS.get(self.path.removeprefix("/api/"))
+            action = ACTIONS.get(urlparse(self.path).path.removeprefix("/api/"))
             if action is None:
                 return self._json(404, {"error": f"no such action: {self.path}"})
             try:
