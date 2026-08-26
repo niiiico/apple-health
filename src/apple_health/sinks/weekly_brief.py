@@ -8,7 +8,7 @@ source of truth).
 
 Usage::
 
-    uv run python tools/vault_sport_week.py --db data/health.db > /tmp/brief.md
+    uv run python apple_health.sinks.weekly_brief --db data/health.db > /tmp/brief.md
 """
 
 from __future__ import annotations

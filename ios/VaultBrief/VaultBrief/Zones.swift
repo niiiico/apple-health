@@ -5,11 +5,15 @@ import Foundation
 /// **This is the single definition.** On the Mac side the same model is spelled
 /// out twice — `ZONES` in `tools/race_detail.py` and a duplicated SQL `CASE` in
 /// `src/apple_health/html_report.py` — which is how their labels drifted (`Z1
-/// <134` vs `Z1 <135`, both cutting at 135). Do not add a third: anything here
+/// <134` vs `Z1 <135`, both cutting at 135). That drift is now resolved: the
+/// Python side has one definition in `derive/zones.py`, the HTML report
+/// generates its SQL from it, and `<135` won because the band includes 134.
+/// This file is the deliberate second copy, kept honest by Parity/check.sh.
+/// Do not add a third: anything here
 /// that needs zones reads `Zones.all`.
 enum Zones {
     struct Zone {
-        let label: String   // e.g. "Z1 <134" — rendered verbatim into the Vault
+        let label: String   // e.g. "Z1 <135" — rendered verbatim into the Vault
         let lo: Double
         let hi: Double
 
@@ -18,17 +22,17 @@ enum Zones {
     }
 
     static let all: [Zone] = [
-        .init(label: "Z1 <134",    lo: 0,   hi: 134),
+        .init(label: "Z1 <135",    lo: 0,   hi: 134),
         .init(label: "Z2 135-159", lo: 135, hi: 159),
         .init(label: "Z3 160-169", lo: 160, hi: 169),
         .init(label: "Z4 170-177", lo: 170, hi: 177),
         .init(label: "Z5 >=178",   lo: 178, hi: 999),
     ]
 
-    /// Header line listing every band, e.g. "Z1 <134 · Z2 135-159 · …".
+    /// Header line listing every band, e.g. "Z1 <135 · Z2 135-159 · …".
     static var header: String { all.map(\.label).joined(separator: " · ") }
 
-    /// Zone containing `hr`. Falls back to Z1, matching `race_detail.zone_of`:
+    /// Zone containing `hr`. Falls back to Z1, matching `derive.zones.zone_of`:
     /// the bands leave no gap, so this only ever fires on a negative reading.
     static func of(_ hr: Double) -> Zone {
         all.first { hr >= $0.lo && hr <= $0.hi } ?? all[0]

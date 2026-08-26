@@ -15,17 +15,17 @@ when something actually changed.
 
 Usage::
 
-    uv run python tools/vault_push.py [--db PATH] [--inbox PATH] [--dry-run]
+    uv run ah-vault [--db PATH] [--inbox PATH] [--dry-run]
 """
 
 from __future__ import annotations
 
 import argparse
 import sqlite3
-import sys
 from datetime import date, datetime
 from pathlib import Path
 
+from ..config import repo_root
 from .box_client import BoxClient
 from ..derive.zones import ZONES, summarize, thirds
 from .session_files import _mmss
@@ -150,7 +150,7 @@ def _append_changelog(existing: str, today: date, changed: list[str]) -> str | N
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Push rolling session files + weekly brief to the Vault.")
-    ap.add_argument("--db", type=Path, default=Path(__file__).resolve().parents[3] / "data/health.db")
+    ap.add_argument("--db", type=Path, default=repo_root() / "data/health.db")
     ap.add_argument("--inbox", type=Path, default=DEFAULT_INBOX)
     ap.add_argument("--dry-run", action="store_true", help="print what would change, upload nothing")
     args = ap.parse_args(argv)

@@ -16,7 +16,7 @@ re-run; the DB and inbox stay the sources of truth.
 
 Usage::
 
-    uv run python tools/session_detail.py [--since 2026-06-29] [--until 2026-07-10]
+    uv run python ah-sessions [--since 2026-06-29] [--until 2026-07-10]
 
 Defaults to the current week (Monday → today).
 """
@@ -30,9 +30,10 @@ import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from ..config import repo_root
 from ..derive.zones import ZONES, summarize, thirds
 
-REPO = Path(__file__).resolve().parents[3]
+REPO = repo_root()
 DEFAULT_INBOX = Path("/Volumes/nicolas-data/HealthData/healthsync-inbox")
 _GPX_NS = "{http://www.topografix.com/GPX/1/1}"
 _EARTH_R_KM = 6371.0088

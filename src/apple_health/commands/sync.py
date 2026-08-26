@@ -2,10 +2,10 @@
 
 Chains the pipeline in-process (no shell):
 
-1. ``icloud_fetch`` — mirror new files from the app's iCloud Drive folder.
-2. ``ah-ingest`` — merge pending deltas into ``health.db``.
-3. ``session_detail`` — re-render the last 14 days of session markdown.
-4. ``vault_push`` — refresh the rolling Vault files + weekly brief.
+1. ``sources.icloud`` — mirror new files from the app's iCloud Drive folder.
+2. ``sources.healthsync`` — merge pending deltas into ``health.db``.
+3. ``sinks.session_files`` — re-render the last 14 days of session markdown.
+4. ``sinks.vault_box`` — refresh the rolling Vault files + weekly brief.
 
 The transport is iCloud (ADR-004); Box remains only as the *destination* of
 step 4, the Claude Vault.
@@ -16,7 +16,7 @@ hand; every step is idempotent.
 
 Usage::
 
-    uv run python tools/sync_cycle.py [--inbox PATH] [--db PATH] [--force]
+    uv run ah-sync [--inbox PATH] [--db PATH] [--force]
 """
 
 from __future__ import annotations
@@ -24,10 +24,10 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
-import sys
 from datetime import date, timedelta
 from pathlib import Path
 
+from ..config import repo_root
 from ..sources import healthsync
 from ..sources import icloud
 from ..sinks import session_files
@@ -40,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--source", type=Path, default=None,
                     help="iCloud folder to mirror from (default: the app's container)")
     ap.add_argument("--db", type=Path,
-                    default=Path(__file__).resolve().parents[3] / "data/health.db")
+                    default=repo_root() / "data/health.db")
     ap.add_argument("--force", action="store_true",
                     help="run ingest/render/push even when nothing new was fetched")
     args = ap.parse_args(argv)

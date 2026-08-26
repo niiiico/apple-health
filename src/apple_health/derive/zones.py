@@ -19,25 +19,34 @@ periods with no recorded model.
 
 from __future__ import annotations
 
-# (label, lo, hi) in bpm, inclusive. Z5's upper bound is a sentinel, not a limit.
-ZONES: list[tuple[str, int, int]] = [
-    ("Z1 <134",    0,   134),
+import math
+
+# (label, lo, hi) in bpm, both bounds inclusive. Z5 is open-ended: a sentinel
+# upper bound would classify a corrupt 1200 bpm sample as Z1 via the fallback.
+ZONES: list[tuple[str, float, float]] = [
+    # Z1's label reads "<135" because the band includes 134. The old "<134"
+    # was off by one against its own bounds, and disagreed with the HTML
+    # report, which had it right.
+    ("Z1 <135",    0,   134),
     ("Z2 135-159", 135, 159),
     ("Z3 160-169", 160, 169),
     ("Z4 170-177", 170, 177),
-    ("Z5 >=178",   178, 999),
+    ("Z5 >=178",   178, math.inf),
 ]
 
 
 def zone_of(hr: float) -> str:
     """Return the zone label a heart rate falls in.
 
+    Z5 is open-ended, so the only unmatched input is a negative rate. That
+    falls back to Z1 rather than raising, matching the behaviour every
+    existing archived race file was rendered with.
+
     Args:
         hr: Heart rate in bpm.
 
     Returns:
-        The matching zone label; Z1 for anything below the first band, which
-        only happens for implausible readings.
+        The matching zone label.
     """
     for name, lo, hi in ZONES:
         if lo <= hr <= hi:

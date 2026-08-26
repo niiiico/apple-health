@@ -7,13 +7,15 @@ name = "apple-health"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "psycopg", extra = ["binary"] },
     { name = "requests" },
 ]
 
 [package.optional-dependencies]
 dev = [
     { name = "pytest" },
+]
+pg = [
+    { name = "psycopg", extra = ["binary"] },
 ]
 viz = [
     { name = "folium" },
@@ -24,11 +26,11 @@ viz = [
 requires-dist = [
     { name = "folium", marker = "extra == 'viz'", specifier = ">=0.16" },
     { name = "matplotlib", marker = "extra == 'viz'", specifier = ">=3.8" },
-    { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
+    { name = "psycopg", extras = ["binary"], marker = "extra == 'pg'", specifier = ">=3.2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "requests", specifier = ">=2.34.2" },
 ]
-provides-extras = ["viz", "dev"]
+provides-extras = ["pg", "viz", "dev"]
 
 [[package]]
 name = "branca"

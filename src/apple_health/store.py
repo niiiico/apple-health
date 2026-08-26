@@ -28,11 +28,8 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time as clock_time, tzinfo
 from types import TracebackType
-
-import psycopg
-from psycopg.rows import dict_row
 
 DEFAULT_DSN = "postgresql://apple_health@localhost:5432/apple_health"
 
@@ -69,12 +66,15 @@ _MIGRATIONS: tuple[str, ...] = (
     """,
     # 2 — primitives. Never summarised into the schema.
     """
+    -- The primary key is what makes re-loading a series idempotent. Without
+    -- it a second load doubles every sample, and zone *percentages* still look
+    -- right afterwards, which is what would make it hard to notice.
     CREATE TABLE hr_samples (
         workout_id bigint NOT NULL REFERENCES workouts(id) ON DELETE CASCADE,
         t          timestamptz NOT NULL,
-        bpm        smallint NOT NULL
+        bpm        smallint NOT NULL,
+        PRIMARY KEY (workout_id, t)
     );
-    CREATE INDEX ix_hr_samples ON hr_samples (workout_id, t);
 
     CREATE TABLE laps (
         workout_id bigint NOT NULL REFERENCES workouts(id) ON DELETE CASCADE,
@@ -108,11 +108,20 @@ _MIGRATIONS: tuple[str, ...] = (
     );
     CREATE INDEX ix_records ON records (type, recorded_at);
 
+    -- Keyed on filename, not workout: the GPX source has no workout linkage
+    -- and matching a route to a session is a derivation nobody has written yet.
+    -- workout_id is nullable so that step can fill it in later.
     CREATE TABLE routes (
-        workout_id  bigint PRIMARY KEY REFERENCES workouts(id) ON DELETE CASCADE,
-        n_points    int,
-        distance_km double precision,
-        elev_gain_m double precision,
+        id            bigserial PRIMARY KEY,
+        filename      text NOT NULL UNIQUE,
+        workout_id    bigint REFERENCES workouts(id) ON DELETE SET NULL,
+        started_at    timestamptz,
+        ended_at      timestamptz,
+        n_points      int,
+        distance_km   double precision,
+        duration_min  double precision,
+        elev_gain_m   double precision,
+        avg_speed_kmh double precision,
         min_lat double precision, min_lon double precision,
         max_lat double precision, max_lon double precision
     );
@@ -221,6 +230,43 @@ class ZoneModel:
         return 5
 
 
+def assess_coverage(
+    observed: datetime | None,
+    requested_through: date | None = None,
+    tz: tzinfo | None = None,
+) -> Coverage:
+    """Decide whether `observed` covers every day through `requested_through`.
+
+    Pure, so the comparison can be tested without a database — it is the part
+    that was wrong, and wrong in a way that reads as correct.
+
+    Args:
+        observed: Instant the last ingest queried HealthKit up to, or None.
+        requested_through: Last calendar day the caller asked about.
+        tz: Zone that date is expressed in; defaults to the system zone.
+
+    Returns:
+        A `Coverage`, with `warning` set when the request outruns the data.
+    """
+    if observed is None:
+        return Coverage(None, requested_through, "No ingest has run; the record is empty.")
+    if requested_through is None:
+        return Coverage(observed, None)
+
+    zone = tz or datetime.now().astimezone().tzinfo
+    if observed >= datetime.combine(requested_through, clock_time.max, tzinfo=zone):
+        return Coverage(observed, requested_through)
+
+    local = observed.astimezone(zone)
+    return Coverage(
+        observed,
+        requested_through,
+        f"Requested range extends past observed data. HealthKit was last "
+        f"observed through {local:%Y-%m-%d %H:%M %Z}; the remainder of that "
+        f"day and anything later is UNKNOWN, not absent.",
+    )
+
+
 class Store:
     """PostgreSQL-backed storage for the ingest pipeline.
 
@@ -236,6 +282,12 @@ class Store:
                 `APPLE_HEALTH_DSN`, then to a local database. The password,
                 when one is needed, comes from `APPLE_HEALTH_DB_PASSWORD`.
         """
+        # Imported here, not at module scope, so the value types and
+        # `assess_coverage` stay usable without the driver installed — psycopg
+        # is an optional extra until a command actually reads from Postgres.
+        import psycopg
+        from psycopg.rows import dict_row
+
         self._dsn = dsn or os.environ.get("APPLE_HEALTH_DSN") or DEFAULT_DSN
         password = os.environ.get(_PASSWORD_VAR) or None
         self._connection = psycopg.connect(
@@ -247,7 +299,14 @@ class Store:
             options="-c timezone=UTC",
             **({"password": password} if password else {}),
         )
-        self._migrate()
+        try:
+            self._migrate()
+        except Exception:
+            # __init__ raised, so there is no object for __exit__ to run
+            # on. Leaving the connection open would hold the advisory lock
+            # and block every other pod's startup.
+            self._connection.close()
+            raise
 
     def _migrate(self) -> None:
         """Apply any migrations the database has not seen yet.
@@ -278,15 +337,29 @@ class Store:
                 )
         self._connection.commit()
 
-    def coverage(self, requested_through: date | None = None) -> Coverage:
+    def coverage(
+        self,
+        requested_through: date | None = None,
+        tz: tzinfo | None = None,
+    ) -> Coverage:
         """How far the record extends, and whether it covers `requested_through`.
 
         Every query response carries this. A caller that asks about a window
         running past the last ingest is told so explicitly rather than being
         handed a short list that reads as a complete one.
 
+        A calendar day is only covered once the ingest instant reaches its
+        *end*, in the zone the caller means by that date. Comparing
+        `observed.date()` to `requested_through` instead is wrong in both
+        directions and by a full day: an 08:00 JST sync reads back as
+        `2026-08-25T23:00Z`, which would report a just-synced record as a day
+        stale; an 18:00 PDT sync reads back as the following UTC date, which
+        would report full coverage for a day observed only through the evening.
+
         Args:
-            requested_through: End of the window the caller asked about.
+            requested_through: Last calendar day the caller asked about.
+            tz: Zone that date is expressed in. Defaults to the system zone,
+                which is the athlete's own in the single-user case this serves.
 
         Returns:
             A `Coverage`, with `warning` set when the request outruns the data.
@@ -295,19 +368,7 @@ class Store:
             cursor.execute("SELECT MAX(observed_through) AS t FROM ingest_runs")
             observed = cursor.fetchone()["t"]
 
-        if observed is None:
-            return Coverage(None, requested_through, "No ingest has run; the record is empty.")
-        if requested_through is None or requested_through <= observed.date():
-            return Coverage(observed, requested_through)
-
-        days = (requested_through - observed.date()).days
-        return Coverage(
-            observed,
-            requested_through,
-            f"Requested range extends {days} day(s) past observed data "
-            f"({observed.date().isoformat()}). Sessions after that date are "
-            f"UNKNOWN, not absent.",
-        )
+        return assess_coverage(observed, requested_through, tz)
 
     def zone_model_at(self, when: date) -> ZoneModel | None:
         """The zone model in effect on `when`, or None if none was recorded.

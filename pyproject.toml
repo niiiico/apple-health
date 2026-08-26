@@ -5,11 +5,13 @@ description = "Parse an Apple Health export into a queryable SQLite dataset and 
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "psycopg[binary]>=3.2",
     "requests>=2.34.2",
 ]
 
 [project.optional-dependencies]
+# Postgres store (ADR-006). Nothing imports it yet, and the launchd Mac path
+# only ever touches SQLite, so it stays out of the core install.
+pg = ["psycopg[binary]>=3.2"]
 # Visualisation extras (route heatmap, plots) — not needed for the core parser/report.
 viz = ["folium>=0.16", "matplotlib>=3.8"]
 dev = ["pytest>=8.0"]
@@ -25,6 +27,7 @@ ah-report = "apple_health.sinks.markdown_report:main"
 ah-html = "apple_health.sinks.html_report:main"
 ah-sessions = "apple_health.sinks.session_files:main"
 ah-vault = "apple_health.sinks.vault_box:main"
+ah-races = "apple_health.sinks.race_files:main"
 
 [build-system]
 requires = ["hatchling"]

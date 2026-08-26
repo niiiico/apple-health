@@ -29,7 +29,7 @@ nothing new.
 
 Usage::
 
-    uv run python tools/icloud_fetch.py [--inbox PATH] [--source PATH]
+    uv run ah-fetch [--inbox PATH] [--source PATH]
 """
 
 from __future__ import annotations

@@ -15,7 +15,7 @@ windows) and re-run. Segment windows come from the ``routes`` table
 
 Usage::
 
-    AH_EXPORT=/path/to/export.xml uv run python tools/race_detail.py
+    AH_EXPORT=/path/to/export.xml uv run ah-races
 
 ``AH_EXPORT`` defaults to the dated cold-archive export on the NAS. Point it at
 whichever export covers the race dates you are archiving.
@@ -23,18 +23,20 @@ whichever export covers the race dates you are archiving.
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
 from datetime import time
+
+from ..config import repo_root
+from ..derive.zones import ZONES, summarize, thirds, zone_of  # noqa: F401
 
 # Canonical immutable source (ADR-001). Override with AH_EXPORT for other exports.
 EXPORT = os.environ.get(
     "AH_EXPORT",
     "/Volumes/nicolas-data/HealthData/apple_health_export_2026-06-29/export.xml",
 )
-OUTDIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "races")
-
-from ..derive.zones import ZONES, summarize, thirds, zone_of  # noqa: F401
+OUTDIR = str(repo_root() / "data" / "races")
 
 
 def _t(h, m, s=0):
@@ -173,6 +175,22 @@ def write_files(buckets):
             out.write("\n".join(lines) + "\n")
         n = summarize(all_vals)["n"] if summarize(all_vals) else 0
         print(f"wrote {os.path.normpath(path)}  ({n} HR samples)")
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Archive every race in the RACES registry to `data/races/`.
+
+    Takes no options: the export path comes from `AH_EXPORT` and the races
+    themselves from the registry in this module. The parser exists so `--help`
+    behaves like every other entry point and documents both.
+    """
+    argparse.ArgumentParser(
+        description="Archive per-segment HR detail for the races in the RACES "
+                    "registry. Set AH_EXPORT to point at a different export.xml; "
+                    f"currently {EXPORT}. Output goes to {OUTDIR}.",
+    ).parse_args(argv)
+    write_files(extract())
+    return 0
 
 
 if __name__ == "__main__":

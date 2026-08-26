@@ -19,8 +19,36 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..derive.zones import ZONES
+
 # Quarterly bucket expression: "YYYY-Qn" from a column holding an ISO date.
 _Q = "substr({c},1,4)||'-Q'||((cast(substr({c},6,2) AS int)+2)/3)"
+
+
+def _zone_case() -> str:
+    """SQL `CASE` bucketing `avg_hr` into the canonical zones.
+
+    Generated rather than written out, so this report cannot drift from
+    `derive.zones` the way its hand-maintained copy did — the two disagreed on
+    Z1's label for months. Bands are inclusive of `hi`, hence `< hi + 1`.
+    """
+    whens = " ".join(
+        f"WHEN avg_hr<{int(hi) + 1} THEN '{label}'" for label, _, hi in ZONES[:-1]
+    )
+    return f"CASE {whens} ELSE '{ZONES[-1][0]}' END"
+
+
+# Zone palette, cool → hot, positional against ZONES.
+_ZONE_COLORS = ("#6ad1ff", "#37c871", "#ffd454", "#ffb454", "#ff5d5d")
+
+
+def _zone_colors() -> dict[str, str]:
+    """Label → colour for the donut, keyed off the canonical bands.
+
+    Hand-keying this map is what made a label change silently un-colour an arc
+    rather than fail.
+    """
+    return {label: c for (label, _, _), c in zip(ZONES, _ZONE_COLORS)}
 
 
 def _rows(con: sqlite3.Connection, sql: str, params: tuple = ()) -> list[dict]:
@@ -118,12 +146,7 @@ def gather(con: sqlite3.Connection) -> dict:
     year = (span_hi or "2026")[:4]
     data["zones"] = _rows(
         con,
-        """SELECT CASE
-                    WHEN avg_hr<135 THEN 'Z1 <135'
-                    WHEN avg_hr<160 THEN 'Z2 135-159'
-                    WHEN avg_hr<170 THEN 'Z3 160-169'
-                    WHEN avg_hr<178 THEN 'Z4 170-177'
-                    ELSE 'Z5 178+' END AS zone,
+        f"""SELECT {_zone_case()} AS zone,
                   count(*) AS runs
            FROM workouts
            WHERE activity='Running' AND avg_hr IS NOT NULL AND substr(start,1,4)=?
@@ -154,6 +177,7 @@ def render(data: dict, generated_at: str) -> str:
     """Render the full HTML document for the given data bundle."""
     return (
         _TEMPLATE.replace("__DATA__", json.dumps(data))
+        .replace("__ZONE_COLORS__", json.dumps(_zone_colors()))
         .replace("__GENERATED__", generated_at)
         .replace("__SPAN__", f"{data['kpis']['span_lo']} → {data['kpis']['span_hi']}")
     )
@@ -408,7 +432,7 @@ function fmtHMS(min){ const h=Math.floor(min/60), m=min%60; return h+":"+String(
 (function(){
   const d = DATA.zones; d3.select("#zoneYear").text(DATA.zones_year); if(!d.length) return;
   const s = svg("#zones"); const cx=W/2, cy=H/2-4, rad=Math.min(W,H)/2-30;
-  const color = {"Z1 <135":"#6ad1ff","Z2 135-159":"#37c871","Z3 160-169":"#ffd454","Z4 170-177":"#ffb454","Z5 178+":"#ff5d5d"};
+  const color = __ZONE_COLORS__;
   const pie = d3.pie().value(r=>r.runs).sort(null);
   const arc = d3.arc().innerRadius(rad*.55).outerRadius(rad);
   const total = d3.sum(d,r=>r.runs);

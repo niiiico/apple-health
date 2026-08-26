@@ -134,7 +134,7 @@ markdown file per race under `data/races/`:
 
 ```bash
 # Add a race to the RACES registry in the sink, then:
-AH_EXPORT=/path/to/export.xml uv run python -m apple_health.sinks.race_files
+AH_EXPORT=/path/to/export.xml uv run ah-races
 ```
 
 This is the durable record for re-analysis later — segment windows come from the
@@ -144,7 +144,7 @@ the NAS repo.
 ## Tests
 
 ```bash
-uv run --with pytest pytest -q
+uv run --extra dev pytest -q
 ```
 
 Tests run the parsers over tiny inline fixtures (no real export needed).
