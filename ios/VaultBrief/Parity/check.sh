@@ -30,16 +30,15 @@ uv run --directory "$repo" python - "$today" "$work/py-out" <<'PY'
 import sqlite3, sys
 from datetime import date
 from pathlib import Path
-sys.path.insert(0, "tools")
-import vault_push, vault_sport_week
+from apple_health.sinks import vault_box, weekly_brief
 
 today = date.fromisoformat(sys.argv[1])
 out = Path(sys.argv[2]); out.mkdir(parents=True, exist_ok=True)
 conn = sqlite3.connect("data/health.db")
-for activity, (name, label) in vault_push.DISCIPLINES.items():
+for activity, (name, label) in vault_box.DISCIPLINES.items():
     (out / name).write_text(
-        vault_push.render_discipline(conn, activity, label, vault_push.DEFAULT_INBOX, today))
-(out / "sport-week-current.md").write_text(vault_sport_week.render(conn, today))
+        vault_box.render_discipline(conn, activity, label, vault_box.DEFAULT_INBOX, today))
+(out / "sport-week-current.md").write_text(weekly_brief.render(conn, today))
 PY
 
 echo "== rendering with Swift (app sources) =="

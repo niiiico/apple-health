@@ -26,11 +26,10 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from apple_health.box_client import BoxClient  # noqa: E402
-from race_detail import ZONES, summarize, thirds  # noqa: E402
-from session_detail import _mmss  # noqa: E402
-import vault_sport_week  # noqa: E402
+from .box_client import BoxClient
+from ..derive.zones import ZONES, summarize, thirds
+from .session_files import _mmss
+from . import weekly_brief
 
 VAULT_FOLDER_ID = "380962826177"
 DEFAULT_INBOX = Path("/Volumes/nicolas-data/HealthData/healthsync-inbox")
@@ -151,7 +150,7 @@ def _append_changelog(existing: str, today: date, changed: list[str]) -> str | N
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Push rolling session files + weekly brief to the Vault.")
-    ap.add_argument("--db", type=Path, default=Path(__file__).resolve().parent.parent / "data/health.db")
+    ap.add_argument("--db", type=Path, default=Path(__file__).resolve().parents[3] / "data/health.db")
     ap.add_argument("--inbox", type=Path, default=DEFAULT_INBOX)
     ap.add_argument("--dry-run", action="store_true", help="print what would change, upload nothing")
     args = ap.parse_args(argv)
@@ -162,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
         name: render_discipline(conn, activity, label, args.inbox, today)
         for activity, (name, label) in DISCIPLINES.items()
     }
-    renders["sport-week-current.md"] = vault_sport_week.render(conn, today)
+    renders["sport-week-current.md"] = weekly_brief.render(conn, today)
     conn.close()
 
     box = BoxClient()

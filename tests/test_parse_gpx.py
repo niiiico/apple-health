@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import textwrap
 
-from apple_health import parse_gpx
+from apple_health.sources import gpx
 
 # Two points ~111 m apart in latitude (0.001 deg), 60 s apart, +5 m elevation.
 SAMPLE = textwrap.dedent("""\
@@ -22,7 +22,7 @@ SAMPLE = textwrap.dedent("""\
 def test_summarise(tmp_path):
     p = tmp_path / "route_2024-03-01_7.00am.gpx"
     p.write_text(SAMPLE, encoding="utf-8")
-    s = parse_gpx.summarise_gpx(p)
+    s = gpx.summarise_gpx(p)
 
     assert s.n_points == 2
     assert 0.10 < s.distance_km < 0.12          # ~0.111 km
@@ -35,5 +35,5 @@ def test_summarise(tmp_path):
 def test_parse_routes_dir(tmp_path):
     (tmp_path / "a.gpx").write_text(SAMPLE, encoding="utf-8")
     (tmp_path / "b.gpx").write_text(SAMPLE, encoding="utf-8")
-    summaries = parse_gpx.parse_routes(tmp_path, progress_every=0)
+    summaries = gpx.parse_routes(tmp_path, progress_every=0)
     assert len(summaries) == 2

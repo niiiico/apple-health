@@ -7,7 +7,8 @@ import textwrap
 
 import pytest
 
-from apple_health import db, ingest
+from apple_health import db
+from apple_health.sources import healthsync
 
 # A GPX matching Apple's workout-route shape (two points ~111 m apart, 60 s).
 GPX = textwrap.dedent("""\
@@ -68,7 +69,7 @@ def test_apply_basic(tmp_path):
         daily_metrics={"added": [_bucket()]},
     ))
     conn = _conn(tmp_path)
-    s = ingest.ingest_dir(conn, inbox)
+    s = healthsync.ingest_dir(conn, inbox)
 
     assert s.files == 1 and s.workouts == 1 and s.records == 1 and s.daily == 1
     assert conn.execute("SELECT count(*) FROM workouts").fetchone()[0] == 1
@@ -86,8 +87,8 @@ def test_idempotent_rerun(tmp_path):
         1, workouts={"added": [_workout()]}, daily_metrics={"added": [_bucket()]}))
     conn = _conn(tmp_path)
 
-    ingest.ingest_dir(conn, inbox)
-    s2 = ingest.ingest_dir(conn, inbox)  # same files, already applied
+    healthsync.ingest_dir(conn, inbox)
+    s2 = healthsync.ingest_dir(conn, inbox)  # same files, already applied
 
     assert s2.files == 0
     assert conn.execute("SELECT count(*) FROM workouts").fetchone()[0] == 1
@@ -105,7 +106,7 @@ def test_daily_additive_merge(tmp_path):
     _write_delta(inbox, "delta-20240302T120000Z-0002.json", _delta(
         2, daily_metrics={"added": [_bucket(count=1, sum=100.0, min=100.0, max=100.0)]}))
     conn = _conn(tmp_path)
-    ingest.ingest_dir(conn, inbox)
+    healthsync.ingest_dir(conn, inbox)
 
     count, ssum, mn, mx, avg = conn.execute(
         "SELECT count, sum, min, max, avg FROM daily_metrics WHERE type='HeartRate'").fetchone()
@@ -124,7 +125,7 @@ def test_workout_dedup_by_uuid(tmp_path):
     _write_delta(inbox, "delta-20240302T120000Z-0002.json", _delta(
         2, workouts={"added": [_workout(uuid="W1")]}))
     conn = _conn(tmp_path)
-    ingest.ingest_dir(conn, inbox)
+    healthsync.ingest_dir(conn, inbox)
     assert conn.execute("SELECT count(*) FROM workouts").fetchone()[0] == 1
 
 
@@ -136,7 +137,7 @@ def test_workout_delete(tmp_path):
     _write_delta(inbox, "delta-20240302T120000Z-0002.json", _delta(
         2, workouts={"added": [], "deleted": ["W1"]}))
     conn = _conn(tmp_path)
-    s = ingest.ingest_dir(conn, inbox)
+    s = healthsync.ingest_dir(conn, inbox)
     assert s.deleted_workouts == 1
     assert conn.execute("SELECT count(*) FROM workouts").fetchone()[0] == 0
 
@@ -148,7 +149,7 @@ def test_routes_ingested(tmp_path):
     _write_delta(inbox, "delta-20240301T120000Z-0001.json", _delta(
         1, workouts={"added": [_workout(uuid="W1", route_file="route-W1.gpx")]}))
     conn = _conn(tmp_path)
-    s = ingest.ingest_dir(conn, inbox)
+    s = healthsync.ingest_dir(conn, inbox)
     assert s.routes == 1
     row = conn.execute("SELECT filename, n_points FROM routes").fetchone()
     assert row[0] == "route-W1.gpx" and row[1] == 2
@@ -165,7 +166,7 @@ def test_cadence_rederived(tmp_path):
          "sum": 100.0, "min": 1.0, "max": 1.0},
     ]}))
     conn = _conn(tmp_path)
-    s = ingest.ingest_dir(conn, inbox)
+    s = healthsync.ingest_dir(conn, inbox)
     assert s.cadence_days == 1
     avg = conn.execute("SELECT avg FROM daily_metrics WHERE type='RunningCadence'").fetchone()[0]
     assert abs(avg - 160.0) < 0.05  # 9.6 km/h / 1.0 m stride → 160 spm
@@ -183,10 +184,10 @@ def test_refuses_full_build_db(tmp_path):
     conn.commit()
 
     with pytest.raises(SystemExit):
-        ingest.ingest_dir(conn, inbox)
+        healthsync.ingest_dir(conn, inbox)
 
     # --force lets it through.
-    s = ingest.ingest_dir(conn, inbox, force=True)
+    s = healthsync.ingest_dir(conn, inbox, force=True)
     assert s.files == 1
 
 
@@ -198,7 +199,7 @@ def test_unsupported_schema_raises(tmp_path):
     _write_delta(inbox, "delta-20240301T120000Z-0001.json", d)
     conn = _conn(tmp_path)
     with pytest.raises(ValueError):
-        ingest.ingest_dir(conn, inbox)
+        healthsync.ingest_dir(conn, inbox)
 
 
 def test_ensure_incremental_schema_adds_uuid(tmp_path):
@@ -230,13 +231,13 @@ def test_backfill_replaces_instead_of_adding(tmp_path):
     conn, inbox = _conn(tmp_path), tmp_path
     _write_delta(inbox, "delta-20240301T120000Z-0001.json", _delta(
         1, daily_metrics={"added": [_bucket(count=2, sum=260.0, min=120.0, max=140.0)]}))
-    ingest.ingest_dir(conn, inbox)
+    healthsync.ingest_dir(conn, inbox)
 
     # Same day re-shipped as a whole-day authoritative aggregate.
     _write_delta(inbox, "delta-20240305T120000Z-0002.json", _backfill(
         2, "2024-03-01", "2024-03-01",
         daily_metrics={"added": [_bucket(count=10, sum=1300.0, min=100.0, max=170.0)]}))
-    ingest.ingest_dir(conn, inbox)
+    healthsync.ingest_dir(conn, inbox)
 
     row = conn.execute(
         "select count, sum, min, max, avg from daily_metrics "
@@ -252,7 +253,7 @@ def test_backfill_is_content_idempotent(tmp_path):
             1, "2024-03-01", "2024-03-01",
             workouts={"added": [_workout()], "deleted": []},
             daily_metrics={"added": [_bucket(count=10, sum=1300.0)]}))
-        ingest.ingest_dir(conn, inbox)
+        healthsync.ingest_dir(conn, inbox)
 
     assert conn.execute("select count(*) from workouts").fetchone()[0] == 1
     assert conn.execute(
@@ -268,7 +269,7 @@ def test_backfill_rejects_range_including_today(tmp_path):
                  _backfill(1, today, today,
                            daily_metrics={"added": [_bucket(day=today)]}))
     with pytest.raises(ValueError, match="must end before today"):
-        ingest.ingest_dir(conn, inbox)
+        healthsync.ingest_dir(conn, inbox)
 
 
 def test_backfill_rejects_bucket_outside_declared_range(tmp_path):
@@ -277,7 +278,7 @@ def test_backfill_rejects_bucket_outside_declared_range(tmp_path):
         1, "2024-03-01", "2024-03-02",
         daily_metrics={"added": [_bucket(day="2024-03-09")]}))
     with pytest.raises(ValueError, match="outside the declared backfill range"):
-        ingest.ingest_dir(conn, inbox)
+        healthsync.ingest_dir(conn, inbox)
 
 
 def test_backfill_block_requires_schema_2(tmp_path):
@@ -288,7 +289,7 @@ def test_backfill_block_requires_schema_2(tmp_path):
     d["backfill"] = {"from": "2024-03-01", "to": "2024-03-01"}
     _write_delta(inbox, "delta-20240305T120000Z-0001.json", d)
     with pytest.raises(ValueError, match="requires schema 2"):
-        ingest.ingest_dir(conn, inbox)
+        healthsync.ingest_dir(conn, inbox)
 
 
 def test_schema_2_requires_backfill_block(tmp_path):
@@ -297,7 +298,7 @@ def test_schema_2_requires_backfill_block(tmp_path):
     d["schema"] = 2
     _write_delta(inbox, "delta-20240305T120000Z-0001.json", d)
     with pytest.raises(ValueError, match="requires a 'backfill' block"):
-        ingest.ingest_dir(conn, inbox)
+        healthsync.ingest_dir(conn, inbox)
 
 
 def test_normal_delta_after_backfill_still_adds(tmp_path):
@@ -312,7 +313,7 @@ def test_normal_delta_after_backfill_still_adds(tmp_path):
                           }))
     _write_delta(inbox, "delta-20240307T120000Z-0003.json", _delta(
         3, daily_metrics={"added": [_bucket(day="2024-03-02", count=1, sum=100.0)]}))
-    ingest.ingest_dir(conn, inbox)
+    healthsync.ingest_dir(conn, inbox)
 
     assert conn.execute(
         "select count, sum from daily_metrics where day='2024-03-02'").fetchone() == (4, 500.0)

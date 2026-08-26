@@ -30,9 +30,9 @@ import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from race_detail import ZONES, summarize, thirds
+from ..derive.zones import ZONES, summarize, thirds
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parents[3]
 DEFAULT_INBOX = Path("/Volumes/nicolas-data/HealthData/healthsync-inbox")
 _GPX_NS = "{http://www.topografix.com/GPX/1/1}"
 _EARTH_R_KM = 6371.0088

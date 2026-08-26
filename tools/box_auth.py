@@ -1,6 +1,6 @@
 """One-time Box OAuth bootstrap for the Mac-side pipeline (ADR-003).
 
-Creates the token store that ``apple_health.box_client.BoxClient`` uses.
+Creates the token store that ``apple_health.sinks.box_client.BoxClient`` uses.
 Prerequisite: a Box Platform "Custom App" (OAuth 2.0 user authentication)
 with a localhost redirect URI and the "Read and write all files and folders"
 scope.
@@ -32,7 +32,7 @@ from pathlib import Path
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from apple_health.box_client import DEFAULT_TOKEN_STORE, TOKEN_URL, _write_private  # noqa: E402
+from apple_health.sinks.box_client import DEFAULT_TOKEN_STORE, TOKEN_URL, _write_private  # noqa: E402
 
 DEFAULT_REDIRECT = "http://localhost:53682/callback"
 AUTH_URL = "https://account.box.com/api/oauth2/authorize"

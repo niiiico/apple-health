@@ -15,8 +15,7 @@
         <string>run</string>
         <string>--project</string>
         <string>/Volumes/nicolas-data/Repositories/apple-health</string>
-        <string>python</string>
-        <string>/Volumes/nicolas-data/Repositories/apple-health/tools/sync_cycle.py</string>
+        <string>ah-sync</string>
     </array>
     <key>StartInterval</key>
     <integer>1800</integer>

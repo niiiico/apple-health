@@ -4,7 +4,6 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 REPO = Path("/Volumes/nicolas-data/Repositories/apple-health")
-sys.path.insert(0, str(REPO / "tools"))
 INBOX = Path("/Volumes/nicolas-data/HealthData/healthsync-inbox")
 TODAY = date.fromisoformat(sys.argv[1]) if len(sys.argv) > 1 else date.today()
 

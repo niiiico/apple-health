@@ -14,7 +14,8 @@ import argparse
 import time
 from pathlib import Path
 
-from . import __version__, db, parse_export, parse_gpx
+from .. import __version__, db
+from ..sources import gpx, health_export
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,8 +35,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.export:
         print(f"Parsing export: {args.export}")
         t0 = time.time()
-        res = parse_export.parse_export(args.export)
-        parse_export.write(conn, res)
+        res = health_export.parse_export(args.export)
+        health_export.write(conn, res)
         print(
             f"  workouts={len(res.workouts):,} "
             f"daily_metrics={len(res.daily):,} "
@@ -46,8 +47,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.routes:
         print(f"Parsing routes: {args.routes}")
         t0 = time.time()
-        summaries = parse_gpx.parse_routes(args.routes)
-        parse_gpx.write(conn, summaries)
+        summaries = gpx.parse_routes(args.routes)
+        gpx.write(conn, summaries)
         total_km = sum(s.distance_km for s in summaries)
         print(f"  routes={len(summaries):,} total={total_km:,.0f} km in {time.time() - t0:.0f}s")
 

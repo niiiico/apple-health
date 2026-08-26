@@ -1,5 +1,6 @@
 """Tests for the pure (no-network) parts of the sync pipeline:
-vault_push rendering + bookkeeping helpers, and icloud_fetch copy planning.
+`sinks.vault_box` rendering + bookkeeping helpers, and `sources.icloud` copy
+planning.
 """
 
 from __future__ import annotations
@@ -8,12 +9,10 @@ import sys
 from datetime import date
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
-
-import icloud_fetch  # noqa: E402
-import sync_cycle  # noqa: E402
-import vault_push  # noqa: E402
-from apple_health import db  # noqa: E402
+from apple_health.sources import icloud
+from apple_health.commands import sync
+from apple_health.sinks import vault_box
+from apple_health import db
 
 
 def _conn(tmp_path):
@@ -37,7 +36,7 @@ def test_render_discipline_with_hr_series(tmp_path):
         return f"2026-07-10T{t // 3600:02d}:{t % 3600 // 60:02d}:{t % 60:02d}Z,{130 + i % 30}\n"
 
     (inbox / "hr-U1.csv").write_text("time,bpm\n" + "".join(row(i) for i in range(150)))
-    out = vault_push.render_discipline(
+    out = vault_box.render_discipline(
         _conn(tmp_path), "Swimming", "natation", inbox, date(2026, 7, 14))
     assert "## 2026-07-10 — 1.50 km / 44 min / FC 143/171 / 343 kcal" in out
     assert "Zones (150 éch.)" in out
@@ -46,7 +45,7 @@ def test_render_discipline_with_hr_series(tmp_path):
 
 
 def test_render_discipline_without_hr_series(tmp_path):
-    out = vault_push.render_discipline(
+    out = vault_box.render_discipline(
         _conn(tmp_path), "Swimming", "natation", tmp_path, date(2026, 7, 14))
     assert "Séries FC indisponibles" in out
 
@@ -57,24 +56,24 @@ def test_ensure_map_rows_inserts_sorted_and_is_idempotent():
         "| `aaa.md` | a | A |",
         "| `sport-running-plan.md` | sport | plan |",
         "| `zzz.md` | z | Z |", ""])
-    out = vault_push._ensure_map_rows(existing, list(vault_push._MAP_ROWS))
+    out = vault_box._ensure_map_rows(existing, list(vault_box._MAP_ROWS))
     lines = out.splitlines()
     idx = {n: next(i for i, l in enumerate(lines) if f"`{n}`" in l)
-           for n in vault_push._MAP_ROWS}
+           for n in vault_box._MAP_ROWS}
     assert idx["sport-course-sessions.md"] < idx["sport-natation-sessions.md"]
     assert idx["sport-natation-sessions.md"] < idx["sport-velo-sessions.md"]
     # sorted against pre-existing rows too
     assert idx["sport-velo-sessions.md"] < next(
         i for i, l in enumerate(lines) if "`zzz.md`" in l)
-    assert vault_push._ensure_map_rows(out, list(vault_push._MAP_ROWS)) == out
+    assert vault_box._ensure_map_rows(out, list(vault_box._MAP_ROWS)) == out
 
 
 def test_append_changelog_once_per_day():
     existing = "# Changelog — Claude Vault\n\n## 2026-07-12 (x)\n- old\n"
-    out = vault_push._append_changelog(existing, date(2026, 7, 14), ["a.md"])
+    out = vault_box._append_changelog(existing, date(2026, 7, 14), ["a.md"])
     assert out.index("## 2026-07-14 (auto — vault_push)") < out.index("## 2026-07-12")
     assert "`a.md`" in out
-    assert vault_push._append_changelog(out, date(2026, 7, 14), ["b.md"]) is None
+    assert vault_box._append_changelog(out, date(2026, 7, 14), ["b.md"]) is None
 
 
 def test_plan_copies_orders_sidecars_before_deltas():
@@ -85,7 +84,7 @@ def test_plan_copies_orders_sidecars_before_deltas():
         "delta-20260630T000000Z-0000.json",
         "already.json",
     ]
-    assert icloud_fetch.plan_copies(remote, {"already.json"}) == [
+    assert icloud.plan_copies(remote, {"already.json"}) == [
         "hr-B.csv", "route-A.gpx",
         "delta-20260630T000000Z-0000.json",
         "delta-20260701T000000Z-0001.json"]
@@ -94,15 +93,15 @@ def test_plan_copies_orders_sidecars_before_deltas():
 def test_plan_copies_treats_icloud_placeholders_as_the_real_file():
     # A file present only as a not-yet-downloaded placeholder still needs
     # copying; one already in the inbox must not be copied twice.
-    assert icloud_fetch.plan_copies([".hr-B.csv.icloud"], set()) == ["hr-B.csv"]
-    assert icloud_fetch.plan_copies([".hr-B.csv.icloud"], {"hr-B.csv"}) == []
+    assert icloud.plan_copies([".hr-B.csv.icloud"], set()) == ["hr-B.csv"]
+    assert icloud.plan_copies([".hr-B.csv.icloud"], {"hr-B.csv"}) == []
 
 
 def test_plan_copies_skips_dotfiles_and_the_empty_name_edge_case():
     # A file literally named ".icloud" must not resolve to "", which would
     # address the source directory itself.
-    assert icloud_fetch.resolve_placeholder(".icloud") == ".icloud"
-    assert icloud_fetch.plan_copies([".icloud", ".DS_Store"], set()) == []
+    assert icloud.resolve_placeholder(".icloud") == ".icloud"
+    assert icloud.plan_copies([".icloud", ".DS_Store"], set()) == []
 
 
 def _src(tmp_path):
@@ -115,20 +114,20 @@ def _src(tmp_path):
 
 def test_main_copies_then_is_idempotent(tmp_path, capsys):
     src, inbox = _src(tmp_path), tmp_path / "inbox"
-    assert icloud_fetch.main(["--source", str(src), "--inbox", str(inbox)]) == 0
+    assert icloud.main(["--source", str(src), "--inbox", str(inbox)]) == 0
     assert capsys.readouterr().out.split() == [
         "hr-A.csv", "delta-20260701T000000Z-0001.json"]
     assert (inbox / "hr-A.csv").read_text() == "time,bpm\n"
 
-    # Second run: nothing new, and empty stdout is what tells sync_cycle so.
-    assert icloud_fetch.main(["--source", str(src), "--inbox", str(inbox)]) == 0
+    # Second run: nothing new, and empty stdout is what tells the sync command so.
+    assert icloud.main(["--source", str(src), "--inbox", str(inbox)]) == 0
     assert capsys.readouterr().out == ""
 
 
 def test_main_skips_directories(tmp_path, capsys):
     src, inbox = _src(tmp_path), tmp_path / "inbox"
     (src / "subfolder").mkdir()
-    assert icloud_fetch.main(["--source", str(src), "--inbox", str(inbox)]) == 0
+    assert icloud.main(["--source", str(src), "--inbox", str(inbox)]) == 0
     assert "subfolder" not in capsys.readouterr().out
     assert not (inbox / "subfolder").exists()
 
@@ -140,15 +139,15 @@ def test_main_leaves_no_partial_file_when_a_copy_fails(tmp_path, capsys, monkeyp
         Path(d).write_text("trunc")
         raise OSError("connection reset")
 
-    monkeypatch.setattr(icloud_fetch.shutil, "copyfile", die)
-    assert icloud_fetch.main(["--source", str(src), "--inbox", str(inbox)]) == 1
+    monkeypatch.setattr(icloud.shutil, "copyfile", die)
+    assert icloud.main(["--source", str(src), "--inbox", str(inbox)]) == 1
     # No truncated file may survive, or it would count as present forever.
     assert list(inbox.iterdir()) == []
     assert capsys.readouterr().out == ""
 
 
 def test_main_reports_a_missing_source_folder(tmp_path):
-    assert icloud_fetch.main(
+    assert icloud.main(
         ["--source", str(tmp_path / "gone"), "--inbox", str(tmp_path / "inbox")]) == 1
 
 
@@ -159,15 +158,15 @@ def _cycle_args(tmp_path):
 def test_sync_cycle_stops_and_reports_when_the_fetch_fails(tmp_path, monkeypatch):
     # A dead transport must not look like a healthy quiet cycle (ADR-004).
     ran = []
-    monkeypatch.setattr(sync_cycle.icloud_fetch, "main", lambda argv: 1)
-    monkeypatch.setattr(sync_cycle.ingest, "main", lambda argv: ran.append("ingest"))
-    assert sync_cycle.main(_cycle_args(tmp_path)) == 1
+    monkeypatch.setattr(sync.icloud, "main", lambda argv: 1)
+    monkeypatch.setattr(sync.healthsync, "main", lambda argv: ran.append("ingest"))
+    assert sync.main(_cycle_args(tmp_path)) == 1
     assert ran == []
 
 
 def test_sync_cycle_skips_the_pipeline_when_nothing_was_fetched(tmp_path, monkeypatch):
     ran = []
-    monkeypatch.setattr(sync_cycle.icloud_fetch, "main", lambda argv: 0)
-    monkeypatch.setattr(sync_cycle.ingest, "main", lambda argv: ran.append("ingest"))
-    assert sync_cycle.main(_cycle_args(tmp_path)) == 0
+    monkeypatch.setattr(sync.icloud, "main", lambda argv: 0)
+    monkeypatch.setattr(sync.healthsync, "main", lambda argv: ran.append("ingest"))
+    assert sync.main(_cycle_args(tmp_path)) == 0
     assert ran == []

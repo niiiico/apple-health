@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import textwrap
 
-from apple_health import db, parse_export
+from apple_health import db
+from apple_health.sources import health_export
 
 SAMPLE = textwrap.dedent("""\
     <?xml version="1.0" encoding="UTF-8"?>
@@ -36,7 +37,7 @@ def _write_sample(tmp_path):
 
 
 def test_aggregates_and_sparse(tmp_path):
-    res = parse_export.parse_export(_write_sample(tmp_path), progress_every=0)
+    res = health_export.parse_export(_write_sample(tmp_path), progress_every=0)
 
     # Two heart-rate samples on the same day collapse to one daily row.
     hr = res.daily[("2024-03-01", "HeartRate")]
@@ -51,7 +52,7 @@ def test_aggregates_and_sparse(tmp_path):
 
 
 def test_workout_fields(tmp_path):
-    res = parse_export.parse_export(_write_sample(tmp_path), progress_every=0)
+    res = health_export.parse_export(_write_sample(tmp_path), progress_every=0)
     assert len(res.workouts) == 1
     activity, start, _end, dur, dist, energy, avg_hr, max_hr, source, indoor = res.workouts[0]
     assert activity == "Running"
@@ -63,10 +64,10 @@ def test_workout_fields(tmp_path):
 
 
 def test_write_roundtrip(tmp_path):
-    res = parse_export.parse_export(_write_sample(tmp_path), progress_every=0)
+    res = health_export.parse_export(_write_sample(tmp_path), progress_every=0)
     conn = db.connect(tmp_path / "h.db")
     db.init_schema(conn)
-    parse_export.write(conn, res)
+    health_export.write(conn, res)
 
     assert conn.execute("SELECT count(*) FROM workouts").fetchone()[0] == 1
     avg = conn.execute(

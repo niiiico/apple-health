@@ -24,7 +24,8 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from . import __version__, db, parse_gpx
+from .. import __version__, db
+from . import gpx
 
 SCHEMA_VERSION = 1
 BACKFILL_SCHEMA_VERSION = 2
@@ -243,8 +244,8 @@ def _merge_routes(conn: sqlite3.Connection, section: dict, inbox: Path) -> int:
         if not path.exists():
             print(f"    ! route file missing, skipped: {name}")
             continue
-        summary = parse_gpx.summarise_gpx(path)
-        parse_gpx.write(conn, [summary])  # INSERT OR REPLACE on filename
+        summary = gpx.summarise_gpx(path)
+        gpx.write(conn, [summary])  # INSERT OR REPLACE on filename
         written += 1
     return written
 

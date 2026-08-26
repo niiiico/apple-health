@@ -17,6 +17,29 @@ This project reduces it to a lean DB (a few hundred MB) that answers training
 questions instantly. The raw export stays **immutable on cold storage (NAS)**;
 the DB is a disposable projection, rebuilt from source whenever needed.
 
+## Design
+
+```
+sources  ──▶  store  ──▶  derive  ──▶  sinks
+(export,      (sqlite,     (zones,      (markdown report, html report,
+ healthsync,   postgres)    cadence,     session files, vault brief,
+ gpx, icloud)               drift)       race archive)
+```
+
+Sources and derivations are the expensive, stable layer. **Where the data lands
+is a plugin** — adding a destination is a file under `sinks/`, not a redesign.
+Four earlier ADRs each rewrote the pipeline to change the destination; see
+[ADR-006](docs/adr-006-sinks-are-plugins.md) for why that stopped.
+
+Two properties the sinks depend on:
+
+- **Coverage is a recorded fact.** Every query knows the instant HealthKit was
+  last observed through, and says so when a request runs past it. A view that
+  omitted this once produced a training conclusion that stood wrong for a month.
+- **Derivations are computed, never stored.** HR zone boundaries are defined on
+  the watch and change; a persisted zone percentage is only valid for the model
+  that produced it, so the raw series is the thing that is kept.
+
 ## Data model
 
 See [`docs/adr-001-storage-model.md`](docs/adr-001-storage-model.md) for the
@@ -83,12 +106,13 @@ uv run ah-ingest \
   (`HKAnchoredObjectQuery` for new/deleted samples; pre-aggregates dense metrics
   into daily buckets; exports route GPX). Build/sign it from Xcode — see its
   README.
-- **Unattended:** `tools/sync_cycle.py` chains the whole pipeline
-  (`icloud_fetch` → `ah-ingest` → `session_detail` → `vault_push`) and runs
+- **Unattended:** `ah-sync` chains the whole pipeline
+  (`ah-fetch` → `ah-ingest` → `ah-sessions` → `ah-vault`) and can run
   every 30 min under launchd — copy `tools/launchd/net.dev2.healthsync.sync.plist`
   into `~/Library/LaunchAgents/` and `launchctl load` it. The final step pushes
   curated summaries to the Claude Vault on Box and needs a one-time
-  `uv run python tools/box_auth.py` on the Mac.
+  `uv run python tools/box_auth.py` on the Mac (an operator script, not part
+  of the pipeline).
 - **Bootstrap:** the first sync has no anchor, so it ships your full history as
   one delta — point `ah-ingest` at a **fresh** `--db` to bootstrap. (`ah-ingest`
   refuses to merge into a DB made by full `ah-build`, since unioning the two
@@ -109,8 +133,8 @@ zone distribution, drift) is extracted from the raw `export.xml` and kept as one
 markdown file per race under `data/races/`:
 
 ```bash
-# Add a race to the RACES registry in the tool, then:
-AH_EXPORT=/path/to/export.xml uv run python tools/race_detail.py
+# Add a race to the RACES registry in the sink, then:
+AH_EXPORT=/path/to/export.xml uv run python -m apple_health.sinks.race_files
 ```
 
 This is the durable record for re-analysis later — segment windows come from the

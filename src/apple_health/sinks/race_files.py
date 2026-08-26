@@ -32,27 +32,13 @@ EXPORT = os.environ.get(
     "AH_EXPORT",
     "/Volumes/nicolas-data/HealthData/apple_health_export_2026-06-29/export.xml",
 )
-OUTDIR = os.path.join(os.path.dirname(__file__), "..", "data", "races")
+OUTDIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "races")
 
-# HR zones (bpm) — stable, from the athlete profile.
-ZONES = [
-    ("Z1 <134",    0,   134),
-    ("Z2 135-159", 135, 159),
-    ("Z3 160-169", 160, 169),
-    ("Z4 170-177", 170, 177),
-    ("Z5 >=178",   178, 999),
-]
+from ..derive.zones import ZONES, summarize, thirds, zone_of  # noqa: F401
 
 
 def _t(h, m, s=0):
     return time(h, m, s)
-
-
-def zone_of(hr):
-    for name, lo, hi in ZONES:
-        if lo <= hr <= hi:
-            return name
-    return ZONES[0][0]
 
 
 # Registry of archived races. Segment windows are JST (UTC route time + 9 h).
@@ -123,34 +109,6 @@ RACES = [
         ],
     },
 ]
-
-
-def summarize(vals):
-    hrs = [v for _, v in vals]
-    if not hrs:
-        return None
-    n = len(hrs)
-    zc = {z[0]: 0 for z in ZONES}
-    for h in hrs:
-        zc[zone_of(h)] += 1
-    return {
-        "n": n, "avg": sum(hrs) / n, "min": min(hrs), "max": max(hrs),
-        "zones": {z: 100.0 * c / n for z, c in zc.items()},
-    }
-
-
-def thirds(vals):
-    vals = sorted(vals)
-    n = len(vals)
-    if n < 120:
-        return []
-    out = []
-    for i, label in enumerate(["1/3", "2/3", "3/3"]):
-        chunk = vals[i * (n // 3):(i + 1) * (n // 3)] if i < 2 else vals[2 * (n // 3):]
-        hrs = [v for _, v in chunk]
-        if hrs:
-            out.append((label, sum(hrs) / len(hrs), max(hrs)))
-    return out
 
 
 def extract():

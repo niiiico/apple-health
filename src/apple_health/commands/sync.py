@@ -28,20 +28,19 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from apple_health import ingest  # noqa: E402
-import icloud_fetch  # noqa: E402
-import session_detail  # noqa: E402
-import vault_push  # noqa: E402
+from ..sources import healthsync
+from ..sources import icloud
+from ..sinks import session_files
+from ..sinks import vault_box
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Run one iCloud→DB→Vault sync cycle.")
-    ap.add_argument("--inbox", type=Path, default=icloud_fetch.DEFAULT_INBOX)
+    ap.add_argument("--inbox", type=Path, default=icloud.DEFAULT_INBOX)
     ap.add_argument("--source", type=Path, default=None,
                     help="iCloud folder to mirror from (default: the app's container)")
     ap.add_argument("--db", type=Path,
-                    default=Path(__file__).resolve().parent.parent / "data/health.db")
+                    default=Path(__file__).resolve().parents[3] / "data/health.db")
     ap.add_argument("--force", action="store_true",
                     help="run ingest/render/push even when nothing new was fetched")
     args = ap.parse_args(argv)
@@ -51,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
         fetch_args += ["--source", str(args.source)]
     fetched = io.StringIO()
     with contextlib.redirect_stdout(fetched):
-        rc = icloud_fetch.main(fetch_args)
+        rc = icloud.main(fetch_args)
     print(fetched.getvalue(), end="")
     if rc != 0:
         # A missing source folder or a failed copy must not look like a quiet,
@@ -63,11 +62,11 @@ def main(argv: list[str] | None = None) -> int:
         print("nothing new")
         return 0
 
-    ingest.main(["--inbox", str(args.inbox), "--db", str(args.db)])
+    healthsync.main(["--inbox", str(args.inbox), "--db", str(args.db)])
     since = (date.today() - timedelta(days=14)).isoformat()
-    session_detail.main(["--db", str(args.db), "--inbox", str(args.inbox),
+    session_files.main(["--db", str(args.db), "--inbox", str(args.inbox),
                          "--since", since])
-    vault_push.main(["--db", str(args.db), "--inbox", str(args.inbox)])
+    vault_box.main(["--db", str(args.db), "--inbox", str(args.inbox)])
     return 0
 
 

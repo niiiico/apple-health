@@ -15,10 +15,16 @@ viz = ["folium>=0.16", "matplotlib>=3.8"]
 dev = ["pytest>=8.0"]
 
 [project.scripts]
-ah-build = "apple_health.build_db:main"
-ah-ingest = "apple_health.ingest:main"
-ah-report = "apple_health.report:main"
-ah-html = "apple_health.html_report:main"
+# Sources and commands keep their established names; the sinks gain them so
+# nothing is invoked as `python tools/<script>.py` any more (ADR-006).
+ah-build = "apple_health.commands.build:main"
+ah-sync = "apple_health.commands.sync:main"
+ah-ingest = "apple_health.sources.healthsync:main"
+ah-fetch = "apple_health.sources.icloud:main"
+ah-report = "apple_health.sinks.markdown_report:main"
+ah-html = "apple_health.sinks.html_report:main"
+ah-sessions = "apple_health.sinks.session_files:main"
+ah-vault = "apple_health.sinks.vault_box:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-from apple_health import html_report
+from apple_health.sinks import html_report
 
 
 @pytest.fixture
