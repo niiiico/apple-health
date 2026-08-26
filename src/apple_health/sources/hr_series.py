@@ -95,9 +95,21 @@ class FallbackSeries:
         self.sources = sources
 
     def series_for(self, uuid: str | None) -> Series | None:
-        """First non-None series among the sources, or None if none has one."""
+        """First non-None series among the sources, or None if none has one.
+
+        A source that *raises* is treated as one that has nothing: the Pi can
+        drop a connection mid-render, and one failed query leaves psycopg's
+        connection in `InFailedSqlTransaction` so every later read raises too.
+        Guarding construction alone would leave the "never worse than the
+        inbox" promise false for exactly the case it exists to cover.
+        """
         for source in self.sources:
-            series = source.series_for(uuid)
+            try:
+                series = source.series_for(uuid)
+            except Exception as exc:
+                print(f"  ! {type(source).__name__} failed ({exc.__class__.__name__}); "
+                      f"trying the next source")
+                continue
             if series is not None:
                 return series
         return None

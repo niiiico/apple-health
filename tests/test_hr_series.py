@@ -83,3 +83,24 @@ def test_no_source_has_it():
     from apple_health.sources.hr_series import FallbackSeries
 
     assert FallbackSeries(_Fake(None), _Fake(None)).series_for("u") is None
+
+
+class _Raising:
+    """A source that fails, as Postgres does when its connection drops."""
+
+    def series_for(self, uuid):
+        raise RuntimeError("connection closed")
+
+
+def test_fallback_survives_a_raising_source():
+    # "Never worse than the inbox" has to hold when the Pi drops a connection
+    # mid-render, not only when Postgres politely returns nothing.
+    from apple_health.sources.hr_series import FallbackSeries
+
+    assert FallbackSeries(_Raising(), _Fake([(1.0, 120.0)])).series_for("u") == [(1.0, 120.0)]
+
+
+def test_fallback_returns_none_when_every_source_fails():
+    from apple_health.sources.hr_series import FallbackSeries
+
+    assert FallbackSeries(_Raising(), _Raising()).series_for("u") is None

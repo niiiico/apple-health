@@ -113,7 +113,7 @@ def hr_sections(vals: Series) -> list[str]:
 
 
 def workout_section(w: sqlite3.Row, inbox: Path,
-                    series: HRSeriesSource | None = None) -> list[str]:
+                    series: HRSeriesSource) -> list[str]:
     parts = []
     if w["distance_km"]:
         parts.append(f"{w['distance_km']:.2f} km")
@@ -127,7 +127,7 @@ def workout_section(w: sqlite3.Row, inbox: Path,
         parts.append(f"{w['energy_kcal']:.0f} kcal")
     lines = [f"## {w['activity']} {w['start'][11:16]} — " + ", ".join(parts), ""]
 
-    vals = (series or default_source(inbox)).series_for(w["uuid"])
+    vals = series.series_for(w["uuid"])
     if vals:
         lines += hr_sections(vals)
     else:
@@ -151,6 +151,7 @@ def render_range(conn: sqlite3.Connection, inbox: Path, outdir: Path,
     `series` chooses where heart-rate samples come from; the default reads the
     inbox sidecars, which is what this did before `hr_samples` existed.
     """
+    series = series or default_source(inbox)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT * FROM workouts WHERE start >= ? AND start < ? ORDER BY start",

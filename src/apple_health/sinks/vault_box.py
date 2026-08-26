@@ -75,7 +75,7 @@ def _hr_lines(vals: Series) -> list[str]:
 
 
 def _session_entry(w: sqlite3.Row, inbox: Path,
-                   series: HRSeriesSource | None = None) -> list[str]:
+                   series: HRSeriesSource) -> list[str]:
     parts = []
     if w["distance_km"]:
         parts.append(f"{w['distance_km']:.2f} km")
@@ -88,7 +88,7 @@ def _session_entry(w: sqlite3.Row, inbox: Path,
     if w["energy_kcal"]:
         parts.append(f"{w['energy_kcal']:.0f} kcal")
     lines = [f"## {w['start'][:10]} — " + " / ".join(parts)]
-    vals = (series or default_source(inbox)).series_for(w["uuid"])
+    vals = series.series_for(w["uuid"])
     if vals:
         lines += _hr_lines(vals)
     else:
@@ -104,6 +104,7 @@ def render_discipline(conn: sqlite3.Connection, activity: str, label: str,
     `series` chooses where heart-rate samples come from; the default reads the
     inbox sidecars, which is what this did before `hr_samples` existed.
     """
+    series = series or default_source(inbox)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT * FROM workouts WHERE activity = ? ORDER BY start DESC LIMIT ?",
@@ -162,8 +163,9 @@ def main(argv: list[str] | None = None) -> int:
     today = date.today()
 
     conn = sqlite3.connect(args.db)
+    series = default_source(args.inbox)
     renders: dict[str, str] = {
-        name: render_discipline(conn, activity, label, args.inbox, today)
+        name: render_discipline(conn, activity, label, args.inbox, today, series)
         for activity, (name, label) in DISCIPLINES.items()
     }
     renders["sport-week-current.md"] = weekly_brief.render(conn, today)

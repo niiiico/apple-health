@@ -41,7 +41,7 @@ from .migrate import DEFAULT_INBOX, _observed_through, _parse_ts, _tz_name
 def applied_refs(store: Store) -> set[str]:
     """Delta filenames Postgres has already recorded an ingest run for."""
     with store.cursor() as cur:
-        cur.execute("SELECT ref FROM ingest_runs")
+        cur.execute("SELECT ref FROM ingest_runs WHERE source = 'healthsync'")
         return {r["ref"] for r in cur.fetchall()}
 
 
@@ -64,7 +64,19 @@ def _merge_workouts(cur, section: dict) -> tuple[int, int]:
              None if w.get("indoor") is None else bool(w["indoor"]),
              w["uuid"], _parse_ts(w["start"]), w["activity"], w.get("source")),
         )
-        inserted += cur.rowcount
+        if cur.rowcount:
+            inserted += 1
+            continue
+        # Skipped as a duplicate. If it matched on the natural key, the stored
+        # row came from the full export and carries no uuid — adopt this one, or
+        # the series lookup below finds nothing and the samples are lost for
+        # good, since the delta is about to be marked applied.
+        cur.execute(
+            """UPDATE workouts SET uuid = %s
+                WHERE uuid IS NULL AND started_at = %s AND activity = %s
+                  AND COALESCE(source,'') = COALESCE(%s,'')""",
+            (w["uuid"], _parse_ts(w["start"]), w["activity"], w.get("source")),
+        )
 
     deleted = 0
     for uuid in section.get("deleted", []):
@@ -75,14 +87,27 @@ def _merge_workouts(cur, section: dict) -> tuple[int, int]:
 
 
 def _merge_records(cur, section: dict) -> int:
-    rows = section.get("added", [])
-    for r in rows:
+    """Insert sparse records, skipping ones already stored.
+
+    The dedup is not optional: a schema-2 backfill re-queries a closed range
+    ignoring anchors and re-emits records for days already ingested. Without it
+    Postgres gains a second copy of every resting-HR and VO2max row in the
+    range, and any later average over that period is quietly wrong. Returns the
+    number actually written, not the number offered.
+    """
+    written = 0
+    for r in section.get("added", []):
         cur.execute(
-            "INSERT INTO records (type, recorded_at, value, unit, source)"
-            " VALUES (%s,%s,%s,%s,%s)",
-            (r["type"], _parse_ts(r["start"]), r.get("value"), r.get("unit"), r.get("source")),
+            """INSERT INTO records (type, recorded_at, value, unit, source)
+               SELECT %s,%s,%s,%s,%s
+                WHERE NOT EXISTS (SELECT 1 FROM records
+                                   WHERE type = %s AND recorded_at = %s
+                                     AND COALESCE(source,'') = COALESCE(%s,''))""",
+            (r["type"], _parse_ts(r["start"]), r.get("value"), r.get("unit"), r.get("source"),
+             r["type"], _parse_ts(r["start"]), r.get("source")),
         )
-    return len(rows)
+        written += cur.rowcount
+    return written
 
 
 def _merge_daily(cur, section: dict, *, replace: bool) -> int:
@@ -97,8 +122,8 @@ def _merge_daily(cur, section: dict, *, replace: bool) -> int:
         """count = excluded.count, sum = excluded.sum,
            min = excluded.min, max = excluded.max, unit = excluded.unit"""
         if replace else
-        """count = daily_metrics.count + excluded.count,
-           sum   = daily_metrics.sum + excluded.sum,
+        """count = daily_metrics.count + COALESCE(excluded.count, 0),
+           sum   = daily_metrics.sum + COALESCE(excluded.sum, 0),
            min   = LEAST(daily_metrics.min, COALESCE(excluded.min, daily_metrics.min)),
            max   = GREATEST(daily_metrics.max, COALESCE(excluded.max, daily_metrics.max)),
            unit  = excluded.unit"""
@@ -156,6 +181,10 @@ def _merge_hr_series(cur, section: dict, inbox: Path) -> int:
             continue
         path = inbox / f"hr-{uuid}.csv"
         if not path.exists():
+            # The contract neither guarantees a sidecar arrives with its delta
+            # nor retries one that did not. Say so; sweep_orphan_series() is
+            # what actually recovers it.
+            print(f"    ! HR sidecar missing: hr-{uuid}.csv (sweep will retry)")
             continue
         cur.execute("SELECT id FROM workouts WHERE uuid = %s", (uuid,))
         row = cur.fetchone()
@@ -176,7 +205,7 @@ def _merge_hr_series(cur, section: dict, inbox: Path) -> int:
                 " ON CONFLICT (workout_id, t) DO NOTHING",
                 batch,
             )
-            samples += len(batch)
+            samples += cur.rowcount
     return samples
 
 
@@ -209,6 +238,50 @@ def apply_delta(store: Store, path: Path) -> dict[str, int]:
             "daily": n_daily, "routes": n_routes, "hr_samples": n_hr}
 
 
+def sweep_orphan_series(store: Store, inbox: Path) -> int:
+    """Load any `hr-<uuid>.csv` whose workout has no samples yet.
+
+    Two cases need this, and neither is reachable from a delta's own
+    `workouts.added`: a sidecar that arrived after the delta referencing it (the
+    contract does not order them and does not retry), and the app's "Backfill HR
+    series" pass, which writes sidecars with *no* delta referencing them at all.
+    `ah-migrate` caught those with a one-shot uuid sweep; without this they would
+    simply never reach Postgres, and the inbox fallback would hide it until the
+    inbox is retired.
+    """
+    loaded = 0
+    with store.cursor() as cur:
+        for path in sorted(inbox.glob("hr-*.csv")):
+            uuid = path.stem[3:]
+            cur.execute(
+                """SELECT w.id FROM workouts w
+                    WHERE w.uuid = %s
+                      AND NOT EXISTS (SELECT 1 FROM hr_samples s WHERE s.workout_id = w.id)""",
+                (uuid,),
+            )
+            row = cur.fetchone()
+            if not row:
+                continue
+            batch = []
+            with open(path) as fh:
+                for line in csv.DictReader(fh):
+                    try:
+                        batch.append((row["id"],
+                                      datetime.fromisoformat(line["time"].replace("Z", "+00:00")),
+                                      int(round(float(line["bpm"])))))
+                    except (KeyError, ValueError):
+                        continue
+            if batch:
+                cur.executemany(
+                    "INSERT INTO hr_samples (workout_id, t, bpm) VALUES (%s,%s,%s)"
+                    " ON CONFLICT (workout_id, t) DO NOTHING",
+                    batch,
+                )
+                loaded += cur.rowcount
+                print(f"  swept {path.name}: +{cur.rowcount} samples")
+    return loaded
+
+
 def main(argv: list[str] | None = None) -> int:
     """Apply every delta Postgres has not yet seen."""
     ap = argparse.ArgumentParser(description="Apply pending deltas to the Postgres store.")
@@ -217,26 +290,44 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="roll back instead of committing")
     args = ap.parse_args(argv)
 
+    # A missing inbox must not read as "nothing to do": Path.glob on a
+    # nonexistent directory yields nothing, so an unmounted volume would report
+    # "up to date" and exit 0 — the quiet-healthy-cycle failure again.
+    if not args.inbox.is_dir():
+        ap.error(f"inbox not found: {args.inbox}")
+
     store = Store(args.dsn)
-    pending = healthsync.pending_deltas(args.inbox, applied_refs(store))
-    if not pending:
-        print("postgres up to date")
+    try:
+        pending = healthsync.pending_deltas(args.inbox, applied_refs(store))
+        for path in pending:
+            counts = apply_delta(store, path)
+            # Commit per delta, as healthsync's `with conn:` does. One
+            # permanently-bad delta must block only itself, not every delta
+            # behind it.
+            if not args.dry_run:
+                store.commit()
+            print(f"Applied {path.name}")
+            print("  +{workouts} workouts (-{deleted_workouts}) +{records} records "
+                  "{daily} metric-days {routes} routes +{hr_samples} hr samples".format(**counts))
+
+        swept = sweep_orphan_series(store, args.inbox)
+        if not args.dry_run and swept:
+            store.commit()
+
+        if not pending and not swept:
+            print("postgres up to date")
+            return 0
+
+        print(f"coverage now {store.coverage().observed_through}")
+        if args.dry_run:
+            store.rollback()
+            print("dry run — rolled back")
+        else:
+            store.commit()
+            print("committed")
         return 0
-
-    for path in pending:
-        counts = apply_delta(store, path)
-        print(f"Applied {path.name}")
-        print("  +{workouts} workouts (-{deleted_workouts}) +{records} records "
-              "{daily} metric-days {routes} routes +{hr_samples} hr samples".format(**counts))
-
-    cov = store.coverage()
-    print(f"coverage now {cov.observed_through}")
-    if args.dry_run:
-        print("dry run — rolled back")
-    else:
-        store.commit()
-        print("committed")
-    return 0
+    finally:
+        store.close()
 
 
 if __name__ == "__main__":

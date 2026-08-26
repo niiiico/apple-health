@@ -384,6 +384,14 @@ class Store:
         """Commit the open transaction."""
         self._connection.commit()
 
+    def rollback(self) -> None:
+        """Discard the open transaction."""
+        self._connection.rollback()
+
+    def close(self) -> None:
+        """Close the connection, discarding anything uncommitted."""
+        self._connection.close()
+
     def coverage(
         self,
         requested_through: date | None = None,

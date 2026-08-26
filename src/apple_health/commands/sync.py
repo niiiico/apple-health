@@ -5,7 +5,9 @@ Chains the pipeline in-process (no shell):
 1. ``sources.icloud`` — mirror new files from the app's iCloud Drive folder.
 2. ``sources.healthsync`` — merge pending deltas into ``health.db``.
 3. ``sinks.session_files`` — re-render the last 14 days of session markdown.
-4. ``sinks.vault_box`` — refresh the rolling Vault files + weekly brief.
+4. ``commands.pgsync`` — apply the same deltas to Postgres, which the
+   renderers now prefer reading from.
+5. ``sinks.vault_box`` — refresh the rolling Vault files + weekly brief.
 
 The transport is iCloud (ADR-004); Box remains only as the *destination* of
 step 4, the Claude Vault.
@@ -25,6 +27,7 @@ import argparse
 import contextlib
 import io
 import os
+import sys
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -69,9 +72,20 @@ def main(argv: list[str] | None = None) -> int:
     # prefer it, and a store left behind would quietly render without zones.
     if os.environ.get("APPLE_HEALTH_DSN"):
         try:
-            pgsync.main(["--inbox", str(args.inbox)])
+            pg_rc = pgsync.main(["--inbox", str(args.inbox)])
+        except SystemExit as exc:          # argparse errors exit rather than raise
+            pg_rc = exc.code or 1
         except Exception as exc:
-            print(f"postgres sync failed ({exc}); renderers fall back to the inbox")
+            print(f"postgres sync failed: {exc}", file=sys.stderr)
+            pg_rc = 1
+        if pg_rc:
+            # Rendering still works — the readers fall back to the inbox — but
+            # `store.coverage()` would keep reporting the last successful
+            # instant, which is a stale-but-plausible answer. That is the exact
+            # failure this project exists to stop, so it must not exit 0.
+            print("postgres is behind; coverage will read stale until this is fixed",
+                  file=sys.stderr)
+            return pg_rc
     since = (date.today() - timedelta(days=14)).isoformat()
     session_files.main(["--db", str(args.db), "--inbox", str(args.inbox),
                          "--since", since])
