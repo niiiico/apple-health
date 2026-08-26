@@ -30,6 +30,7 @@ ah-vault = "apple_health.sinks.vault_box:main"
 ah-races = "apple_health.sinks.race_files:main"
 ah-migrate = "apple_health.commands.migrate:main"
 ah-pgsync = "apple_health.commands.pgsync:main"
+ah-web = "apple_health.web:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -37,6 +38,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/apple_health"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/apple_health/ui_template.html" = "apple_health/ui_template.html"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

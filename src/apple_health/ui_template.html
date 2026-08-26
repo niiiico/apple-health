@@ -1,0 +1,72 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>health — record what the sensor cannot</title>
+<style>
+  :root {
+    --bg:#faf9f7; --panel:#fff; --ink:#1c1b19; --muted:#6b6862;
+    --line:#e5e1da; --accent:#b4552d; --ok:#2f7d4f; --warn:#9a6a00;
+  }
+  @media (prefers-color-scheme: dark) { :root {
+    --bg:#16151a; --panel:#1e1d23; --ink:#ece9e4; --muted:#9a958d;
+    --line:#302e36; --accent:#e08b5f; --ok:#5fbe86; --warn:#d5a441;
+  } }
+  * { box-sizing:border-box }
+  body { margin:0; padding:1.5rem 1rem 4rem; background:var(--bg); color:var(--ink);
+         font:15px/1.55 ui-sans-serif,-apple-system,"Segoe UI",sans-serif; }
+  main { max-width:900px; margin:0 auto }
+  h1 { font-size:1.3rem; margin:0 0 .25rem }
+  h2 { font-size:1rem; margin:2rem 0 .6rem; letter-spacing:.02em;
+       text-transform:uppercase; color:var(--muted) }
+  .cov { font-size:.85rem; color:var(--muted); margin:0 0 1.5rem }
+  .cov b { color:var(--ink); font-weight:600 }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+          padding:.85rem 1rem; margin-bottom:.6rem }
+  .row { display:flex; gap:.75rem; align-items:baseline; flex-wrap:wrap }
+  .row .when { font-variant-numeric:tabular-nums; font-weight:600; min-width:6.2rem }
+  .row .act { color:var(--accent); font-weight:600 }
+  .row .stat { color:var(--muted); font-size:.9rem }
+  .flag { font-size:.72rem; padding:.05rem .4rem; border-radius:99px;
+          border:1px solid var(--line); color:var(--muted) }
+  textarea, input, select { width:100%; font:inherit; color:var(--ink);
+    background:var(--bg); border:1px solid var(--line); border-radius:7px;
+    padding:.45rem .55rem; margin-top:.5rem }
+  textarea { min-height:2.6rem; resize:vertical }
+  button { font:inherit; font-weight:600; color:#fff; background:var(--accent);
+    border:0; border-radius:7px; padding:.45rem .9rem; cursor:pointer; margin-top:.5rem }
+  button.ghost { background:transparent; color:var(--muted); border:1px solid var(--line) }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(7rem,1fr)); gap:.5rem }
+  table { width:100%; border-collapse:collapse; font-size:.9rem }
+  th,td { text-align:left; padding:.35rem .5rem; border-bottom:1px solid var(--line) }
+  th { color:var(--muted); font-weight:600 }
+  .note { color:var(--muted); font-size:.85rem; margin:.4rem 0 0 }
+  .saved { color:var(--ok) } .warn { color:var(--warn) }
+  footer { margin-top:3rem; color:var(--muted); font-size:.8rem }
+</style>
+<main>__BODY__</main>
+<script>
+async function post(action, payload, el) {
+  el.textContent = "saving…"; el.className = "note";
+  try {
+    const r = await fetch("/api/" + action, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload)
+    });
+    const j = await r.json();
+    if (!r.ok || j.error) { el.textContent = j.error || ("HTTP " + r.status); el.className = "note warn"; return false; }
+    el.textContent = j.message || "saved"; el.className = "note saved";
+    return true;
+  } catch (e) { el.textContent = String(e); el.className = "note warn"; return false; }
+}
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-action]");
+  if (!b) return;
+  const card = b.closest("[data-card]");
+  const payload = {};
+  card.querySelectorAll("[data-field]").forEach(i => {
+    payload[i.dataset.field] = i.value === "" ? null : i.value;
+  });
+  const ok = await post(b.dataset.action, payload, card.querySelector("[data-status]"));
+  if (ok && b.dataset.reload) setTimeout(() => location.reload(), 400);
+});
+</script>
