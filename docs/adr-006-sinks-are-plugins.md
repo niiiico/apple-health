@@ -143,10 +143,32 @@ reversed, they are not.
    still renders from its sidecar instead of losing its zones, so the answer is
    never worse than the inbox-only behaviour it replaces.
 
+4. **The interaction layer is deployed** *(done)* — `ah-web` runs on k3s at
+   <https://health.int.dev2.net>, behind an oauth2-proxy sidecar and Authelia,
+   with a certificate from the internal CA. It is the only piece of this that
+   an iPhone can reach, which is the whole point of (g): the facts no sensor
+   produces have to be enterable from wherever you are when you remember them.
+
 **`--inbox` does not disappear.** Route GPX still lives there, and only the
 heart-rate half moved. Claiming the parameter had gone would be the same kind of
 overstatement as "the zone model is defined once" was before the review caught
 it. Retiring it needs route points in the store, which nothing needs yet.
+
+### The database connection is below the house standard, deliberately and visibly
+
+The pod connects with `sslmode=require`. That encrypts the connection but proves
+nothing about *which server answered* — tvledger's own ConfigMap says so in as
+many words, and the standard here is `verify-full` with a client certificate.
+
+It is `require` because issuing that certificate needs the Intermediate CA
+passphrase typed by hand, and the person with the passphrase was not at the
+keyboard. That is a scheduling fact, not an architectural one, so it is written
+down rather than left to be discovered: an undocumented `require` is
+indistinguishable from someone having quietly downgraded it to make a connection
+work, which is precisely the move the file warns against.
+
+The steps to close it are in `deploy/k8s/README.md`. Recorded here because a
+known gap that lives only in a deployment README is a gap that gets forgotten.
 
 ## Consequences
 
@@ -166,5 +188,11 @@ it. Retiring it needs route points in the store, which nothing needs yet.
 - **`sources/healthsync.py` and the phone exporter owe laps.** The tool contract
   specifies them because the coaching already depends on them; until the source
   provides them, `has_laps` is `false` and honest.
+- **The interaction layer has no authentication code, and must not grow any.**
+  The oauth2-proxy sidecar is the only thing its Service publishes, so the login
+  is mandatory by topology rather than by discipline. Two details carry that:
+  `ah-web` binds loopback, and the Service's `targetPort` is the sidecar.
+  Changing either — including "temporarily", to debug something — publishes a
+  write API that takes no credential to the whole cluster.
 - **Reversible.** The raw export on the NAS is untouched and `ah-build`
   reconstructs from it. The dated cold archive remains the recovery path.

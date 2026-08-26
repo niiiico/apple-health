@@ -1,0 +1,13 @@
+---
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: apple-health-db
+  namespace: apple-health
+spec:
+  encryptedData:
+    APPLE_HEALTH_DB_PASSWORD: AgCF0f2bdMcLYFcfqFt6Hs6Ns/12kZX1o1lp2HzageLZy3sR6IaOu/4JtZ4M8sZ4BCGlz6Qd1k9SJAs0nLB0Xo94mNJ2dzxNP9mgL2RwNh2CqsH/uD8QHDwSGkMNEa58/7bxoovxEKRvejCdRbozCF+3NbP1ukjaq9AXlbDz8Cb/Ms6Dex1qYbCMxkCcJoG5Dy+p7cAdhLtfSYUCF7IjNshMAn7ebf8C8Zye29cTxCcZmlRqPxni8Bq9Yf/PXrksgHJIPTLZ0eDGWZi45c2gb/YWX+5a1/ljXX4C53XAawx45z3GNS5PpmeHhp1nTmvnguaaWyBD9N7MShsd/7ghALTWdzHVuolhzDkfknzpTwFixjclAAp40nTA1Ngozw564WuJJ5iqCwJ8VFrb2K6IWiCnvNWniUBO4x4YLkNoxnQTRRqTetfrwVOGGgOeKmmjjYk+VGA9y6Pn70FVn5lGCvYihioEJnecInBuDA4FlX8M3fvmOMFI9zd/6IzTkmRCYZSphPk5CWZCsrANw2tdozD8ayr83nu9H4C3J5pl8upcyUvTIu3Bf/cgoUt72hAf6ImRLl50ePlsBEIhT3kOWvzkQ23Skt9AJp42LYTCKTWHOG8YMGNYIriBXPQDFSMIfJsZU/klUkWgKHwaPdKpay38864Ywq3xKFTSXfAy1kV5Jhk3rPEKm2TzGfVOE15bzFnkNRSOqMH/Ebw7qZkdt8gXoD5ysdhRV4pkt8MEC8+PdA==
+  template:
+    metadata:
+      name: apple-health-db
+      namespace: apple-health

@@ -1,0 +1,54 @@
+# The Dev2 root certificate, so oauth2-proxy can verify Authelia — that image
+# does not trust an internal CA, and without this every token exchange fails on
+# TLS verification.
+#
+# A ConfigMap, not a Secret: a CA certificate is public by construction. It is
+# committed for the same reason.
+#
+# Regenerate from the CA repo with:
+#   kubectl create configmap dev2-ca --namespace apple-health \
+#     --from-file=ca.cert.pem=/Volumes/nicolas-data/Repositories/CA/2025/certs/ca.cert.pem \
+#     --dry-run=client -o yaml > deploy/k8s/dev2-ca.yaml
+apiVersion: v1
+data:
+  ca.cert.pem: |
+    -----BEGIN CERTIFICATE-----
+    MIIGFTCCA/2gAwIBAgIUF83A2BT5rWA4qY26ffARXTaI64AwDQYJKoZIhvcNAQEL
+    BQAwgZExCzAJBgNVBAYTAkpQMQ4wDAYDVQQIDAVUb2t5bzENMAsGA1UEBwwES2l0
+    YTENMAsGA1UECgwERGV2MjEeMBwGA1UECwwVQ2VydGlmaWNhdGUgQXV0aG9yaXR5
+    MRUwEwYDVQQDDAxEZXYyIFJvb3QgQ0ExHTAbBgkqhkiG9w0BCQEWDmFkbWluQGRl
+    djIubmV0MB4XDTI1MDYxNTEzNDMyOVoXDTQ1MDYxMDEzNDMyOVowgZExCzAJBgNV
+    BAYTAkpQMQ4wDAYDVQQIDAVUb2t5bzENMAsGA1UEBwwES2l0YTENMAsGA1UECgwE
+    RGV2MjEeMBwGA1UECwwVQ2VydGlmaWNhdGUgQXV0aG9yaXR5MRUwEwYDVQQDDAxE
+    ZXYyIFJvb3QgQ0ExHTAbBgkqhkiG9w0BCQEWDmFkbWluQGRldjIubmV0MIICIjAN
+    BgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA0ZhwP+Tms521HLX1krp5wvU7oPui
+    /8ioSTRpUxBSX9FX6T9FK3Y69UCCT8j/OZ6yv5aoZi7qkBeEjppinpmO1MKVOKu/
+    0Gnv1hMAox2gna7N5Mp+ZDsPgsHPye+YCZJ3AllqUA2ORh07S8EEKX075R/YsN1k
+    VBj6Z7XkulJIp37Prca0jDmLuR6II8tlAmVZU7xXhyiRbSFBqS9qhY6iwGCukQrl
+    jcjIY/6+gsyafzY0xBrTla2SKG5i+CLR/TT/HZdl9UZpFKO+VzSnS2fwjKf9zwbB
+    shdpmA2d1jsBdWSoc6CPksdlKsRiG7c5NJXEGgTJVUjB8zI2Doph6EJmv7cgP1uT
+    EBH5Dk83Ge2G1N0oya6NAliPdSdqwj9AUL7+IxiD/3LX//bpq6/sr+OKU5KMGDP9
+    emyNqoC9vwUqBqnROM7YDzYphcpU5lE3JFH8UObTKjmwKGa4ojFrDo7UghNzdHHS
+    0Iksm65WNCbvdt1Ye5ibwGAw3f91IX0FQMJ5+dUnZJuXMQm6mtI85wesp807rX+s
+    NlePNrjDRPSzJ0cTVLFvLp7sjKwcTK3cs1Nn5V98oH8EvuKRG1fK15eAd1vknNqS
+    +IqZqR9wCycjZMOm8/NMKtjRX6nFQGRIs5jTLcxQJgSxjlWOvydADatGz/a+Ycjt
+    7vUBF0x9hszQmBMCAwEAAaNjMGEwHQYDVR0OBBYEFH19TGJeiTlmySmLYncqiU2b
+    sF/TMB8GA1UdIwQYMBaAFH19TGJeiTlmySmLYncqiU2bsF/TMA8GA1UdEwEB/wQF
+    MAMBAf8wDgYDVR0PAQH/BAQDAgGGMA0GCSqGSIb3DQEBCwUAA4ICAQCreDfGXeSg
+    ekwVbsU5lmVUmdBKcYPKhSUy6CRmR082ms6+RPjh2CW//Ld8FjiYJ38iEyIYDxCY
+    1X0nsBZnZbysSpZf0UBokCr8u8VUUX3wnhnDFoeLckX7tAz6Nk+t1p2If+RuIH1d
+    psoKkZRQQFNjUsL0SBz4EXZi/mF1EEPqKyGCkii3z7nQC+p69419EKPh1bu63wiA
+    0OYI2Z8vxRGS6b4zhlIeiEcFpqnyNAgHtZWcmVldl6+1WyoA7TLxx++aoiuoA6sL
+    Uap0DfE7AqgIgP4PkyWK0WT4zOV5SK7nmatfhqAlZfRMYjbD0NCTAWhfg/Lzn+mI
+    L+iaL2cUmJYdQ/37EmijriWb29wanh7tXev4SP5dqr3QX5jnoosfYy/AGuZ/Jjcz
+    8Sor/7SWimPPQzf+ofEBZOf7aHWerMerPKjAqP0YdiEZtRmvLWd4AQFTGgMarx2T
+    caQ8YW7B6RGhnpI/iLiYT4gt465FHgDFAL50gkT21/eU/nWjxanPZZHHJTGCVbOH
+    4X56LLHUH/gaAUwHlMZDicKB31CRlszMxFgcRHdcJ3xoCEhL7GpwUxGoxfSFBlqc
+    VfPK66Wx0o1EtR7a1N8I89zwwNGCrKdxR0UrbzbG/lyeshHmVV2AhwuxL8xC2JwY
+    kfgdeuEcpKLfpGtYzRp0wknYUrBs298kEA==
+    -----END CERTIFICATE-----
+kind: ConfigMap
+metadata:
+  creationTimestamp: null
+  name: dev2-ca
+  namespace: apple-health

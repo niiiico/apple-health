@@ -14,9 +14,16 @@ The shape follows `tvledger.web`, and for the reason its docstring gives:
 - `ui.render` turns the store into one page.
 - `handler_for` is the smallest HTTP layer that will serve both.
 
-**No authentication.** It binds to the internal network and expects to sit
-behind the estate's SSO the way other internal apps do. Do not expose it
-directly; the write actions take no credential and assume the caller is you.
+**No authentication of its own, by design.** An oauth2-proxy sidecar sharing
+the pod's network namespace is the only thing the Service publishes, so every
+request has already been through Authelia before this module sees it; who the
+user is arrives as ``X-Forwarded-User``. That is why ``--host`` defaults to
+loopback: binding every interface would publish the write actions — which take
+no credential — to the rest of the cluster with the sidecar simply bypassed.
+See ``deploy/k8s/``. Run it on 0.0.0.0 only on a machine you trust entirely.
+
+Probes: ``/livez`` answers from the process alone, ``/healthz`` and ``/readyz``
+reach Postgres. The distinction is not cosmetic — see ``do_GET``.
 """
 
 from __future__ import annotations
@@ -182,6 +189,13 @@ def handler_for(dsn: str | None, window_days: int = WINDOW_DAYS):
             self._send(code, json.dumps(payload).encode(), "application/json")
 
         def do_GET(self):  # noqa: N802
+            if self.path == "/livez":
+                # Deliberately does not touch Postgres. Liveness asks only
+                # whether this process is still serving; a database outage
+                # should take the pod out of service, not restart it, because
+                # restarting cannot fix somebody else's database and with one
+                # replica it just keeps the site down longer.
+                return self._json(200, {"ok": True})
             if self.path in ("/healthz", "/readyz"):
                 try:
                     store = Store(dsn)
@@ -247,7 +261,13 @@ def handler_for(dsn: str | None, window_days: int = WINDOW_DAYS):
 def main(argv: list[str] | None = None) -> int:
     """Serve the interaction layer."""
     ap = argparse.ArgumentParser(description="Serve the health interaction layer.")
-    ap.add_argument("--host", default="0.0.0.0")
+    # Loopback by default. In the cluster an oauth2-proxy sidecar shares this
+    # pod's network namespace and upstreams to 127.0.0.1, so binding every
+    # interface would publish the write API — which takes no credential —
+    # to every other pod, with the sidecar simply bypassed. tvledger's manifest
+    # carries the same note because it learned it the hard way.
+    ap.add_argument("--host", default="127.0.0.1",
+                    help="Bind address. Keep loopback wherever a proxy fronts this.")
     ap.add_argument("--port", type=int, default=8087)
     ap.add_argument("--dsn", default=None, help="Defaults to APPLE_HEALTH_DSN.")
     ap.add_argument("--window-days", type=int, default=WINDOW_DAYS)
@@ -255,7 +275,8 @@ def main(argv: list[str] | None = None) -> int:
 
     server = http.server.ThreadingHTTPServer(
         (args.host, args.port), handler_for(args.dsn, args.window_days))
-    print(f"serving on http://{args.host}:{args.port}  (no auth — internal only)")
+    print(f"serving on http://{args.host}:{args.port}  (no auth of its own — "
+          f"expects a proxy in front)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

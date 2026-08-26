@@ -201,3 +201,54 @@ def test_a_session_with_no_series_says_so_rather_than_showing_zeroes():
 
 def test_an_unknown_session_renders_an_error_page():
     assert "no workout with id 9" in ui.render_session({"error": "no workout with id 9"})
+
+
+# --- probes ------------------------------------------------------------------
+# Worth the cost of a real socket: the whole point of /livez is *which*
+# dependencies it does not have, and that cannot be asserted by calling a pure
+# function. The DSN below is deliberately unparseable, so any code path that
+# reaches for the database fails immediately rather than hanging.
+
+import http.server
+import json as _json
+import threading
+import urllib.request
+from contextlib import contextmanager
+
+
+@contextmanager
+def _serving(dsn):
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), web.handler_for(dsn))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_livez_answers_without_a_database():
+    """Liveness must not depend on Postgres.
+
+    If it did, someone else's database outage would restart this pod in a loop
+    instead of taking it out of service — which cannot fix the database and,
+    with one replica, keeps the site down longer.
+    """
+    with _serving("this is not a dsn") as base:
+        with urllib.request.urlopen(f"{base}/livez", timeout=5) as r:
+            assert r.status == 200
+            assert _json.loads(r.read())["ok"] is True
+
+
+def test_healthz_fails_when_the_database_is_unreachable():
+    """Readiness must depend on Postgres — that is the difference from /livez."""
+    with _serving("this is not a dsn") as base:
+        try:
+            urllib.request.urlopen(f"{base}/healthz", timeout=5)
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 503
+            assert _json.loads(exc.read())["ok"] is False
+        else:
+            pytest.fail("/healthz reported healthy with no reachable database")

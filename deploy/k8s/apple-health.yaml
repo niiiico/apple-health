@@ -1,0 +1,250 @@
+# The apple-health interaction layer on k3s (ADR-006 corollary (g)).
+#
+# One workload: the page where the facts no sensor produces get recorded — the
+# zone model the watch was actually using, why a week went quiet, what a
+# session felt like. Ingest is NOT here and cannot be: `ah-sync` reads the
+# iCloud Drive folder HealthSync writes to, which lives on the Mac and which no
+# pod can see (ADR-004). The cluster is strictly downstream of Postgres.
+#
+# Storage is the existing PostgreSQL at postgres.int.dev2.net, so the pod holds
+# no durable state and is not tied to a node.
+#
+# Not ArgoCD-managed (neither is tvledger). `kubectl apply -f` this file; it is
+# the record of what should be running.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: apple-health
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: apple-health-config
+  namespace: apple-health
+data:
+  # No password here: it arrives as APPLE_HEALTH_DB_PASSWORD from the sealed
+  # secret and is never part of the DSN.
+  #
+  # sslmode=require is a KNOWN GAP, recorded in docs/adr-006-sinks-are-plugins.md.
+  # It encrypts the connection but proves nothing about which server answered.
+  # The house standard is verify-full with a client certificate, as tvledger
+  # uses; issuing one needs the Intermediate CA passphrase typed by hand
+  # (see the add-postgres-user skill), which is why this is not that yet.
+  # When the certificate exists, this becomes:
+  #   ...?sslmode=verify-full&sslrootcert=/etc/apple-health/certs/ca.cert.pem
+  #      &sslcert=/etc/apple-health/certs/apple_health.crt
+  #      &sslkey=/etc/apple-health/certs/apple_health.key
+  # and the pg_hba rule for apple_health gains clientcert=verify-full.
+  # Do not "fix" a connection problem by downgrading below what is here.
+  APPLE_HEALTH_DSN: >-
+    postgresql://apple_health@postgres.int.dev2.net:5432/apple_health?sslmode=require
+---
+# The single page at /, per-session detail at /session/<id>, and a write API
+# under /api/. The pod is NOT read-only: those endpoints record zone models and
+# notes. Authelia fronts them via the oauth2-proxy sidecar, and the app binds
+# loopback so the sidecar cannot be bypassed from elsewhere in the cluster.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apple-health-ui
+  namespace: apple-health
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: apple-health
+      app.kubernetes.io/component: ui
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: apple-health
+        app.kubernetes.io/component: ui
+    spec:
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: ui
+          image: registry.int.dev2.net:5000/apple-health:latest
+          imagePullPolicy: Always
+          # Loopback, not 0.0.0.0 — the image's default, repeated here because
+          # it is load-bearing. oauth2-proxy shares this pod's network
+          # namespace and upstreams to 127.0.0.1:8765; binding all interfaces
+          # would publish the write API, which takes no credential, to every
+          # other pod in the cluster with the sidecar simply bypassed.
+          command: ["ah-web"]
+          args: ["--host", "127.0.0.1", "--port", "8765"]
+          envFrom:
+            - configMapRef:
+                name: apple-health-config
+            - secretRef:
+                name: apple-health-db
+          ports:
+            - name: http
+              containerPort: 8765
+          # Probes hit /healthz, which asks Postgres for the coverage instant
+          # and renders nothing. Probing a real page would time out: a probe's
+          # default timeout is one second and a page render takes longer.
+          # Ten seconds because an exec probe pays for interpreter start-up.
+          startupProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - |
+                  import sys, urllib.request
+                  r = urllib.request.urlopen("http://127.0.0.1:8765/healthz", timeout=3)
+                  sys.exit(0 if r.status == 200 else 1)
+            timeoutSeconds: 10
+            periodSeconds: 3
+            failureThreshold: 20
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - |
+                  import sys, urllib.request
+                  r = urllib.request.urlopen("http://127.0.0.1:8765/healthz", timeout=3)
+                  sys.exit(0 if r.status == 200 else 1)
+            periodSeconds: 15
+            timeoutSeconds: 5
+          # Liveness asks only whether the process is serving — /livez does not
+          # touch Postgres. A database outage should take the pod out of
+          # service, not restart it: restarting cannot fix somebody else's
+          # database, and with one replica it keeps the site down longer.
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - |
+                  import sys, urllib.request
+                  r = urllib.request.urlopen("http://127.0.0.1:8765/livez", timeout=3)
+                  sys.exit(0 if r.status == 200 else 1)
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 4
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+
+        # Single sign-on. The application has no auth code and needs none: this
+        # sidecar is the only thing the Service exposes, so every request has
+        # already been through Authelia by the time ah-web sees it. Who the
+        # user is arrives as X-Forwarded-User / X-Forwarded-Email.
+        #
+        # The pair share a network namespace, hence 127.0.0.1 upstream.
+        - name: oauth2-proxy
+          image: quay.io/oauth2-proxy/oauth2-proxy:v7.13.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --provider=oidc
+            - --oidc-issuer-url=https://auth.int.dev2.net
+            - --client-id=apple-health
+            - --redirect-url=https://health.int.dev2.net/oauth2/callback
+            - --upstream=http://127.0.0.1:8765
+            - --http-address=0.0.0.0:4180
+            # Authelia is served from the internal CA, which this image does
+            # not trust; without this every token exchange fails on TLS
+            # verification.
+            - --provider-ca-file=/etc/ssl/dev2/ca.cert.pem
+            # Authelia requires PKCE for this client.
+            - --code-challenge-method=S256
+            # One user, one address: the domain filter would otherwise reject
+            # anything that is not a company domain.
+            - --email-domain=*
+            - --cookie-secure=true
+            # A week-long cookie that is never revalidated, so an Authelia
+            # restart is invisible to anyone already signed in. The cost is
+            # that revoking access takes up to a week to bite.
+            - --cookie-expire=168h
+            - --cookie-refresh=0
+            # Straight to Authelia rather than an interstitial "sign in with"
+            # button; there is only one provider.
+            - --skip-provider-button=true
+            - --pass-user-headers=true
+            - --pass-access-token=false
+            # Trust the X-Forwarded-* headers HAProxy sets.
+            - --reverse-proxy=true
+            # Health must stay reachable without a session: HAProxy checks the
+            # backend with no browser and no cookie.
+            - --skip-auth-route=^/healthz$
+            - --skip-auth-route=^/livez$
+          env:
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: apple-health-oauth2
+                  key: OAUTH2_PROXY_CLIENT_SECRET
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: apple-health-oauth2
+                  key: OAUTH2_PROXY_COOKIE_SECRET
+          ports:
+            - name: proxy
+              containerPort: 4180
+          readinessProbe:
+            httpGet: {path: /ping, port: proxy}
+            periodSeconds: 15
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet: {path: /ping, port: proxy}
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 4
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: ca
+              mountPath: /etc/ssl/dev2
+              readOnly: true
+      volumes:
+        # The Dev2 root certificate, so oauth2-proxy can verify Authelia. A
+        # ConfigMap rather than a Secret because a CA certificate is public by
+        # construction — it is the thing you publish. When the Postgres client
+        # certificate arrives it will need a *Secret* mounted 0600, and this
+        # stays as it is: libpq's key-permission rule is not oauth2-proxy's
+        # problem, and one mount cannot satisfy both.
+        - name: ca
+          configMap:
+            name: dev2-ca
+            defaultMode: 0444
+---
+# NodePort, because HAProxy on ras15/ras16 routes to a host:port backend. It
+# terminates TLS from the internal CA and matches on SNI, so there is no
+# Ingress here and no second path to the same pod.
+#
+# Publish with, from kube-deployments/tools/site-provision:
+#   uv run provision-site health.int.dev2.net -b ras11:30890
+apiVersion: v1
+kind: Service
+metadata:
+  name: apple-health-ui
+  namespace: apple-health
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: apple-health
+    app.kubernetes.io/component: ui
+  ports:
+    # targetPort is the oauth2-proxy sidecar, NOT the application. This is what
+    # makes the login mandatory: port 8765 is never published, so there is no
+    # route to ah-web that skips Authelia.
+    - name: http
+      port: 8765
+      targetPort: proxy
+      nodePort: 30890
