@@ -14,17 +14,27 @@ Two jobs, at two horizons:
 The second is built on the first. Reviews are the raw material; the plan is what
 they add up to.
 
-**The model gets read tools only.** Every write in this module is done by the
-driver, from a tool result the model produced as *text*. That is deliberate: an
-advisor is a machine for producing fluent, confident prose, which is precisely
-the failure this project has spent six ADRs stamping out. Giving it a write tool
-would let a confabulation become a stored fact in one step.
+**It drives the Claude Code CLI, not the Messages API.** That is the house
+arrangement — biblio and braid do the same — and it is a subscription rather
+than metered API billing. `CLAUDE_CODE_OAUTH_TOKEN` authenticates it;
+`ANTHROPIC_API_KEY` is deliberately *not* set, since its presence would make the
+CLI bill the API instead. (An OAuth token sent to the
+Messages API directly is refused with a 429 that carries no rate-limit headers —
+it reads exactly like throttling and is not. That cost a wrong diagnosis before
+the CLI was used, and is the reason `token()` refuses an `sk-ant-api…` key
+outright rather than letting the billing change quietly.)
+
+**The model gets one tool: `ah-query`.** `--allowed-tools` permits that command
+and nothing else, so it cannot read files, write anything, or run arbitrary
+shell. Every write in this module is done by the driver, from the text the model
+returned, so a confabulation cannot become a stored fact in one step.
 
 **Everything it sees comes through `queries`**, never raw SQL. Those responses
 carry their own coverage boundary and zone bands, so the model cannot read "no
 swimming in four weeks" without also being told how far the record is known to
-extend. `basis` records what it actually looked at, so a review that turns out
-to be wrong can be traced to what it was working from.
+extend. `ah-query` logs each call to `AH_QUERY_LOG`, and that log becomes
+`session_reviews.basis` — read back from what actually ran rather than parsed
+out of the CLI's event stream.
 
 Usage::
 
@@ -37,7 +47,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -48,9 +60,14 @@ from .derive.zones import ZONES
 from .store import Store
 
 MODEL = "claude-opus-5"
-_KEY_VAR = "ANTHROPIC_API_KEY"
 _OAUTH_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
-_KEY_FILE = Path.home() / ".config/apple-health/anthropic-key"
+_KEY_FILE = Path.home() / ".config/apple-health/claude-token"
+CLI = os.environ.get("AH_CLAUDE_CLI", "claude")
+
+# The only tool the model may use. A prefix rule, so `ah-query context` and
+# `ah-query sessions --start …` are permitted and nothing else is — no Read, no
+# Write, no bare Bash.
+ALLOWED_TOOLS = "Bash(ah-query:*)"
 
 # How far back `review` looks for unreviewed sessions by default. Not a filter
 # on what is worth reviewing — every session in the window gets one, however
@@ -58,159 +75,61 @@ _KEY_FILE = Path.home() / ".config/apple-health/anthropic-key"
 # are counted and reported rather than silently skipped.
 DEFAULT_REVIEW_DAYS = 14
 
-# Turns before the loop gives up. Reached only if the model keeps calling tools
-# without concluding; the run then fails rather than storing a partial opinion.
-MAX_TURNS = 12
-
 PLAN_SLUG = "plan"
 
 
-def credential() -> dict[str, str]:
-    """Client kwargs for whichever credential is available.
+def token() -> str:
+    """The Claude Code subscription token, from the environment or a 0600 file.
 
-    Two kinds authenticate, and they are not interchangeable:
-
-    - ``sk-ant-api…`` — an API key, sent as ``x-api-key``. Billed per token.
-    - ``sk-ant-oat…`` — a Claude Code OAuth token, sent as ``Authorization:
-      Bearer``. **This will authenticate and then be refused**: such tokens are
-      not authorised for direct Messages API use, and the refusal arrives as a
-      429 with no rate-limit headers (see ``_explain``). Supported here only so
-      the failure can be named accurately.
-
-    Passing an OAuth token as ``api_key`` returns 401 "API key is invalid",
-    which reads like a bad secret rather than the wrong header, so the prefix
-    is checked here instead of leaving it to be diagnosed at 3am.
+    Produced by ``claude setup-token``. Not an API key: an ``sk-ant-api…`` key
+    belongs to the Messages API and would be billed per token, which is why the
+    CLI is run with ``ANTHROPIC_API_KEY`` scrubbed from its environment.
     """
-    token = os.environ.get(_KEY_VAR) or os.environ.get(_OAUTH_VAR) or ""
-    if not token:
+    value = os.environ.get(_OAUTH_VAR) or ""
+    if not value:
         try:
-            token = _KEY_FILE.read_text().strip()
+            value = _KEY_FILE.read_text().strip()
         except OSError:
-            token = ""
-    if not token:
+            value = ""
+    if not value:
         raise SystemExit(
-            f"No credential. Set {_KEY_VAR} or {_OAUTH_VAR}, or write one to "
-            f"{_KEY_FILE} (mode 0600)."
-        )
-    return {"auth_token": token} if token.startswith("sk-ant-oat") else {"api_key": token}
+            f"No token. Set {_OAUTH_VAR} or write one to {_KEY_FILE} (mode 0600).\n"
+            f"Produce it with: claude setup-token")
+    if value.startswith("sk-ant-api"):
+        raise SystemExit(
+            "That is an API key, not a Claude Code token. This advisor drives "
+            "the CLI on a subscription; an API key here would bill the Messages "
+            "API instead. Produce a token with: claude setup-token")
+    return value
 
 
-# --- the tools ---------------------------------------------------------------
-# Descriptions are written for the model, and say what each answer does *not*
-# cover as much as what it does. A tool described only by its happy path is how
-# an absent row becomes a confident zero.
+# --- the one tool ------------------------------------------------------------
 
-TOOL_SPECS: list[dict[str, Any]] = [
-    {
-        "name": "context",
-        "description": (
-            "Orient before anything else. Returns how far the record is known to "
-            "extend (the coverage boundary), the heart-rate zone bands every zone "
-            "figure is computed with, the athlete's recorded goals in their own "
-            "words, and period notes explaining gaps. Call this first, always: "
-            "the other tools return numbers that are meaningless without it."
-        ),
-        "input_schema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "list_sessions",
-        "description": (
-            "Every session in a date window, most recent first. No distance floor "
-            "and no filtering by interest: a 9-minute walk is returned alongside a "
-            "two-hour ride, because deciding what counts is the caller's job and "
-            "silently dropping the short ones is how a training week reads as "
-            "empty. Compact rows; use session_detail for one that matters."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "start": {"type": "string", "description": "ISO date, inclusive"},
-                "end": {"type": "string", "description": "ISO date, inclusive"},
-                "activity": {
-                    "type": "string",
-                    "description": "Optional exact activity, e.g. Running, Swimming, Cycling",
-                },
-            },
-            "required": ["start", "end"],
-        },
-    },
-    {
-        "name": "session_detail",
-        "description": (
-            "One session in full: heart-rate zone durations and shares, drift "
-            "across thirds, laps if the source recorded any, route splits, and the "
-            "athlete's own note. States explicitly when a session has no "
-            "heart-rate series rather than reporting zeroes for it."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {"workout_id": {"type": "integer"}},
-            "required": ["workout_id"],
-        },
-    },
-    {
-        "name": "metric_history",
-        "description": (
-            "One metric over time, bucketed by week or month — resting heart rate, "
-            "HRV, VO2max, body mass and so on. Reports which underlying source it "
-            "read and how far that source covers, and warns when the source stops "
-            "short of the window asked for. A short answer means the data stops, "
-            "not that the value went to zero."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "metric": {
-                    "type": "string",
-                    "description": "e.g. RestingHeartRate, HeartRateVariabilitySDNN, VO2Max, BodyMass",
-                },
-                "start": {"type": "string", "description": "ISO date"},
-                "end": {"type": "string", "description": "ISO date"},
-                "bucket": {"type": "string", "enum": ["week", "month"]},
-            },
-            "required": ["metric", "start", "end"],
-        },
-    },
-    {
-        "name": "race_detail",
-        "description": (
-            "Archived per-leg race breakdowns, mined from the raw export and kept "
-            "outside the database. Call with no argument to list which races have "
-            "an archive; call with one to read it. These are the only place "
-            "official splits and placings live."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {"race": {"type": "string"}},
-        },
-    },
-]
+TOOLS_DOC = """You have exactly one tool: the `ah-query` command, via Bash. It prints JSON. Nothing else is permitted — no reading files, no other commands.
 
+  ah-query context
+      Coverage boundary, heart-rate zone bands, the athlete's goals in their own
+      words, and period notes explaining gaps. Run this first, always.
 
-def _dispatch(store: Store, name: str, args: dict[str, Any]) -> dict[str, Any]:
-    """Run one tool call. Errors are returned, not raised.
+  ah-query sessions --start YYYY-MM-DD --end YYYY-MM-DD [--activity Running]
+      Every session in the window, most recent first. No distance floor and no
+      filtering by interest: a 9-minute walk is returned beside a two-hour ride.
 
-    A tool that raises ends the run; a tool that returns its error lets the
-    model correct a bad argument and carry on, which is the common case.
-    """
-    try:
-        if name == "context":
-            return queries.context(store)
-        if name == "list_sessions":
-            return queries.list_sessions(
-                store, date.fromisoformat(args["start"]), date.fromisoformat(args["end"]),
-                args.get("activity"))
-        if name == "session_detail":
-            return queries.session_detail(store, int(args["workout_id"]))
-        if name == "metric_history":
-            return queries.metric_history(
-                store, args["metric"], date.fromisoformat(args["start"]),
-                date.fromisoformat(args["end"]), args.get("bucket") or "week")
-        if name == "race_detail":
-            return queries.race_detail(args.get("race"))
-        return {"error": f"unknown tool {name!r}"}
-    except Exception as exc:                      # noqa: BLE001 — reported to the model
-        return {"error": f"{type(exc).__name__}: {exc}"}
+  ah-query session --id N
+      One session in full: zone durations and shares, drift across thirds, laps
+      if recorded, route splits, and the athlete's own note. Says so explicitly
+      when a session has no heart-rate series, rather than reporting zeroes.
+
+  ah-query metric --metric RestingHeartRate --start YYYY-MM-DD --end YYYY-MM-DD
+                  [--bucket week|month]
+      One metric over time. Reports which source it read and how far that source
+      covers, and warns when it stops short of the window asked for. A short
+      answer means the data stops, not that the value went to zero.
+      Try: RestingHeartRate, HeartRateVariabilitySDNN, VO2Max, BodyMass.
+
+  ah-query race [--race SLUG]
+      Archived per-leg race breakdowns. With no argument, lists what exists.
+      The only place official splits and placings live."""
 
 
 SYSTEM = """You are advising one endurance athlete on their own training, reading \
@@ -222,7 +141,7 @@ the encouragement, and say the thing that is actually true of this data.
 
 Rules that matter more than being helpful:
 
-1. Call `context` first, every time. It gives you the coverage boundary, the \
+1. Run `ah-query context` first, every time. It gives you the coverage boundary, the \
 zone bands, and their goals. Numbers from the other tools mean nothing without it.
 
 2. Absence of data is never evidence of absence of training. If you see no \
@@ -233,10 +152,10 @@ observed and that you cannot tell which — never "you have stopped swimming".
 
 3. Never report a number the tools did not give you. Do not estimate a pace you \
 were not shown, do not infer a heart rate from a distance, do not carry a figure \
-over from your own knowledge of typical athletes. If you want a number, call a \
-tool for it.
+over from your own knowledge of typical athletes. If you want a number, query \
+for it.
 
-4. Zone figures come from one fixed set of bands, given to you by `context`. \
+4. Zone figures come from one fixed set of bands, given to you by `ah-query context`. \
 They are not read from the watch — nothing can read them from the watch — so if \
 they look wrong for this athlete, say so rather than silently reinterpreting them.
 
@@ -244,10 +163,12 @@ they look wrong for this athlete, say so rather than silently reinterpreting the
 enough to tell" is a useful answer here and a wrong answer is not. You are not \
 being scored on having an opinion."""
 
-REVIEW_TASK = """Review this single session: workout id {workout_id}.
+REVIEW_TASK = SYSTEM + "\n\n" + TOOLS_DOC + """
 
-Call `session_detail` for it, and whatever else you need to judge it — the \
-sessions around it, a metric trend, a past race. Then write the review.
+Review this single session: workout id {workout_id}.
+
+Run `ah-query session --id {workout_id}`, and whatever else you need to judge it \
+— the sessions around it, a metric trend, a past race. Then write the review.
 
 Length should match what happened. An easy half-hour walk deserves one sentence. \
 A hard interval session or a long ride deserves a short paragraph. Do not pad a \
@@ -260,15 +181,17 @@ saying so is the correct review.
 
 Write only the review text. No preamble, no heading, no sign-off."""
 
-PLAN_TASK = """Write the athlete's standing training plan, as of {today}.
+PLAN_TASK = SYSTEM + "\n\n" + TOOLS_DOC + """
 
-Start with `context` to read their goals. Everything you write should serve those \
+Write the athlete's standing training plan, as of {today}.
+
+Start with `ah-query context` to read their goals. Everything you write should serve those \
 goals; if none are recorded, say plainly that no goal is recorded and that the \
 plan is therefore a description of current training rather than a plan towards \
 anything — do not invent an objective.
 
-Look at recent training with `list_sessions`, at whatever trends matter with \
-`metric_history`, and at past races with `race_detail` where a goal points at one.
+Look at recent training with `ah-query sessions`, at whatever trends matter with \
+`ah-query metric`, and at past races with `ah-query race` where a goal points at one.
 
 Write in markdown, and keep it to something readable on a phone before a race. \
 Suggested shape, to vary as the situation deserves:
@@ -282,34 +205,6 @@ This document is rewritten in full each time, so it should read as current on it
 own, without reference to previous versions."""
 
 
-def _explain(exc: Exception, cred: dict[str, str]) -> str:
-    """Name the failure, distinguishing a real throttle from a refused credential.
-
-    A genuine rate limit carries ``retry-after`` and ``anthropic-ratelimit-*``
-    headers. The refusal of a Claude Code OAuth token carries neither, and its
-    message is the literal string "Error" — so it looks exactly like throttling
-    and invites the conclusion that the account is busy. It is not: the token is
-    simply not valid for this API, and waiting will never help.
-    """
-    response = getattr(exc, "response", None)
-    status = getattr(response, "status_code", None)
-    if status != 429:
-        return f"{type(exc).__name__}: {exc}"
-
-    headers = getattr(response, "headers", {}) or {}
-    throttled = any(k.lower() == "retry-after" or "ratelimit" in k.lower()
-                    for k in headers)
-    if throttled:
-        return f"rate limited (retry-after={headers.get('retry-after', '?')})"
-    if "auth_token" in cred:
-        return ("refused, not throttled: this is a Claude Code OAuth token "
-                "(sk-ant-oat…), which is not authorised for direct Messages API "
-                "use. The 429 carries no rate-limit headers, which is how you "
-                "tell. Waiting will not help — use an API key (sk-ant-api…).")
-    return ("429 with no rate-limit headers — refused rather than throttled. "
-            "Check the credential rather than waiting.")
-
-
 @dataclass
 class Run:
     """One completed conversation: the text produced, and what it looked at."""
@@ -318,6 +213,8 @@ class Run:
     calls: list[dict[str, Any]] = field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
+    cost_usd: float | None = None
+    turns: int | None = None
 
     def basis(self, store: Store) -> dict[str, Any]:
         """What the opinion was formed from, for storing beside it.
@@ -332,60 +229,112 @@ class Run:
             "observed_through": (cov.observed_through.isoformat()
                                  if cov.observed_through else None),
             "zone_bands": {label: f"{lo}-{hi}" for label, lo, hi in ZONES},
-            "tool_calls": self.calls,
-            "usage": {"input": self.input_tokens, "output": self.output_tokens},
+            "queries": self.calls,
+            "usage": {"input": self.input_tokens, "output": self.output_tokens,
+                      "cost_usd": self.cost_usd, "turns": self.turns},
         }
 
 
-def converse(client: Any, store: Store, task: str, effort: str = "medium") -> Run:
-    """Run the tool loop until the model stops calling tools, and return its text.
+def run_claude(task: str, timeout: float = 900.0) -> Run:
+    """Run one Claude Code invocation and return its text and what it queried.
 
-    A manual loop rather than the SDK's tool runner, for one reason: every call
-    has to be recorded into `basis`, and owning the loop is the plainest way to
-    do that.
+    `--allowed-tools` is the security boundary: the model may run `ah-query` and
+    nothing else. `--output-format json` gives a parseable envelope rather than
+    prose that has to be scraped.
+
+    ANTHROPIC_API_KEY is removed from the child's environment. If it is set, the
+    CLI authenticates against the metered API instead of the subscription — the
+    run would work and the billing would silently change, which is the kind of
+    difference nobody notices until an invoice.
     """
-    messages: list[dict[str, Any]] = [{"role": "user", "content": task}]
-    calls: list[dict[str, Any]] = []
-    n_in = n_out = 0
+    env = dict(os.environ)
+    env.pop("ANTHROPIC_API_KEY", None)
+    env[_OAUTH_VAR] = token()
 
-    for _ in range(MAX_TURNS):
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=16000,
-            system=SYSTEM,
-            tools=TOOL_SPECS,
-            output_config={"effort": effort},
-            messages=messages,
-        )
-        n_in += response.usage.input_tokens
-        n_out += response.usage.output_tokens
+    with tempfile.TemporaryDirectory(prefix="ah-advise-") as work:
+        log = Path(work) / "queries.jsonl"
+        env["AH_QUERY_LOG"] = str(log)
+        try:
+            proc = subprocess.run(
+                [CLI, "-p", task,
+                 "--allowed-tools", ALLOWED_TOOLS,
+                 "--output-format", "json",
+                 "--model", MODEL],
+                cwd=work, env=env, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=timeout)
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"{CLI!r} is not installed. The advisor drives the Claude Code "
+                f"CLI; install it with: curl -fsSL https://claude.ai/install.sh | bash"
+            ) from None
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"gave up after {timeout:.0f}s; nothing stored") from None
 
-        if response.stop_reason == "max_tokens":
-            # A truncated review reads as a finished one. Storing it would put a
-            # sentence that stops mid-thought into the record as an opinion.
-            raise RuntimeError("hit max_tokens before concluding; nothing stored")
-        if response.stop_reason != "tool_use":
-            text = "".join(b.text for b in response.content if b.type == "text").strip()
-            if not text:
-                raise RuntimeError(f"model stopped with {response.stop_reason!r} and no text")
-            return Run(text, calls, n_in, n_out)
+        calls = _read_log(log)
 
-        messages.append({"role": "assistant", "content": response.content})
-        results = []
-        for block in response.content:
-            if block.type != "tool_use":
-                continue
-            out = _dispatch(store, block.name, block.input or {})
-            calls.append({"tool": block.name, "input": block.input})
-            results.append({
-                "type": "tool_result",
-                "tool_use_id": block.id,
-                "content": json.dumps(out, default=str),
-            })
-        messages.append({"role": "user", "content": results})
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()[:400]
+        raise RuntimeError(f"claude exited {proc.returncode}: {detail}")
 
-    raise RuntimeError(
-        f"gave up after {MAX_TURNS} turns without a conclusion; nothing stored")
+    envelope = _envelope(proc.stdout)
+    text = (envelope.get("result") or "").strip()
+    if not text:
+        # A blank review stored is a session that looks reviewed and says nothing.
+        raise RuntimeError("the model returned no text; nothing stored")
+
+    usage = envelope.get("usage") or {}
+    return Run(text, calls,
+               input_tokens=usage.get("input_tokens", 0),
+               output_tokens=usage.get("output_tokens", 0),
+               cost_usd=envelope.get("total_cost_usd"),
+               turns=envelope.get("num_turns"))
+
+
+def _envelope(stdout: str) -> dict[str, Any]:
+    """The run's result envelope, out of the CLI's event list.
+
+    ``--output-format json`` emits a *list* of events, not one object; the last
+    of type ``result`` carries the answer, the turn count and the cost. Reading
+    the list as an object fails with "'list' object has no attribute 'get'",
+    which says nothing about what was actually wrong.
+    """
+    try:
+        events = json.loads(stdout)
+    except json.JSONDecodeError:
+        raise RuntimeError(
+            f"could not parse the CLI output: {stdout[:200]!r}") from None
+
+    if isinstance(events, dict):                  # tolerated: a single envelope
+        events = [events]
+    results = [e for e in events
+               if isinstance(e, dict) and e.get("type") == "result"]
+    if not results:
+        raise RuntimeError("the CLI returned no result event")
+
+    envelope = results[-1]
+    if envelope.get("is_error"):
+        raise RuntimeError(
+            f"claude reported an error: {envelope.get('subtype') or 'unknown'}")
+    return envelope
+
+
+def _read_log(path: Path) -> list[dict[str, Any]]:
+    """The queries that actually ran, in order.
+
+    Read from what executed rather than from the CLI's event stream: the stream
+    is someone else's format and reports what was *requested*.
+    """
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
 
 
 def unreviewed(store: Store, since: date, limit: int) -> tuple[list[dict], int]:
@@ -457,31 +406,21 @@ def main(argv: list[str] | None = None) -> int:
     rev.add_argument("--since", type=date.fromisoformat,
                      default=date.today() - timedelta(days=DEFAULT_REVIEW_DAYS))
     rev.add_argument("--dry-run", action="store_true", help="print, store nothing")
-    rev.add_argument("--effort", default="medium")
 
     pl = sub.add_parser("plan", help="rewrite the standing plan")
     pl.add_argument("--dry-run", action="store_true", help="print, store nothing")
-    pl.add_argument("--effort", default="high")
 
     args = ap.parse_args(argv)
 
-    import anthropic
-    # A CronJob has nobody to retry it by hand, and a subscription token shares
-    # its rate limit with interactive use, so 429s are expected rather than
-    # exceptional. The SDK retries these with backoff.
-    cred = credential()
-    client = anthropic.Anthropic(max_retries=6, timeout=600.0, **cred)
+    token()          # fail before opening a connection or doing any work
     store = Store(None)
     try:
-        if args.command == "review":
-            return _review(client, store, args, cred)
-        return _plan(client, store, args, cred)
+        return _review(store, args) if args.command == "review" else _plan(store, args)
     finally:
         store.close()
 
 
-def _review(client: Any, store: Store, args: argparse.Namespace,
-            cred: dict[str, str]) -> int:
+def _review(store: Store, args: argparse.Namespace) -> int:
     rows, older = unreviewed(store, args.since, args.limit)
     if older:
         print(f"note: {older} unreviewed session(s) before {args.since} were not "
@@ -494,35 +433,34 @@ def _review(client: Any, store: Store, args: argparse.Namespace,
     for row in rows:
         label = f"{row['started_at']:%Y-%m-%d %H:%M} {row['activity']} (#{row['id']})"
         try:
-            run = converse(client, store, REVIEW_TASK.format(workout_id=row["id"]),
-                           args.effort)
+            run = run_claude(REVIEW_TASK.format(workout_id=row["id"]))
         except Exception as exc:                  # noqa: BLE001
             # One bad session must not abandon the rest; the review is simply
             # not stored, so the next run tries it again.
-            print(f"FAILED {label}: {_explain(exc, cred)}", file=sys.stderr)
+            print(f"FAILED {label}: {exc}", file=sys.stderr)
             failures += 1
             continue
         if args.dry_run:
             print(f"\n=== {label}\n{run.text}")
         else:
             store_review(store, row["id"], run)
-            print(f"reviewed {label}  ({run.output_tokens} out, {len(run.calls)} queries)")
+            print(f"reviewed {label}  ({len(run.calls)} queries"
+                  + (f", ${run.cost_usd:.3f}" if run.cost_usd else "") + ")")
     return 1 if failures else 0
 
 
-def _plan(client: Any, store: Store, args: argparse.Namespace,
-          cred: dict[str, str]) -> int:
+def _plan(store: Store, args: argparse.Namespace) -> int:
     try:
-        run = converse(client, store, PLAN_TASK.format(today=date.today().isoformat()),
-                       args.effort)
+        run = run_claude(PLAN_TASK.format(today=date.today().isoformat()))
     except Exception as exc:                      # noqa: BLE001
-        print(f"FAILED: {_explain(exc, cred)}", file=sys.stderr)
+        print(f"FAILED: {exc}", file=sys.stderr)
         return 1
     if args.dry_run:
         print(run.text)
         return 0
     store_plan(store, run)
-    print(f"plan written ({run.output_tokens} out, {len(run.calls)} queries)")
+    print(f"plan written ({len(run.calls)} queries"
+          + (f", ${run.cost_usd:.3f}" if run.cost_usd else "") + ")")
     return 0
 
 

@@ -14,9 +14,8 @@ dependencies = [
 pg = ["psycopg[binary]>=3.2"]
 # Visualisation extras (route heatmap, plots) — not needed for the core parser/report.
 viz = ["folium>=0.16", "matplotlib>=3.8"]
-# The advisor (ADR-006 (e)). Its own extra so the parser and the Mac's launchd
-# path never pull an API client they do not use.
-advisor = ["anthropic>=0.69"]
+# No `advisor` extra: it drives the Claude Code CLI (the house arrangement, as
+# biblio and braid do), which is a binary on PATH rather than a Python package.
 dev = ["pytest>=8.0"]
 
 [project.scripts]
@@ -35,6 +34,7 @@ ah-migrate = "apple_health.commands.migrate:main"
 ah-pgsync = "apple_health.commands.pgsync:main"
 ah-web = "apple_health.web:main"
 ah-advise = "apple_health.advisor:main"
+ah-query = "apple_health.query_cli:main"
 
 [build-system]
 requires = ["hatchling"]

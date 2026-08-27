@@ -38,6 +38,11 @@ RUN uv sync --frozen --no-dev --extra pg --no-editable
 
 FROM python:3.12-slim
 
+# curl for the Claude Code installer; ripgrep because the CLI expects it.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates ripgrep \
+    && rm -rf /var/lib/apt/lists/*
+
 # Runs unprivileged. It writes nothing: every fact lives in Postgres.
 RUN useradd --create-home --uid 10001 health
 
@@ -58,6 +63,17 @@ ENV PATH="/opt/venv/bin:$PATH" \
 COPY --from=build /app/data/races /app/data/races
 
 USER health
+
+# The advisor drives the Claude Code CLI rather than the Messages API — the
+# house arrangement, as biblio and braid do. Installed as the app's own user:
+# the CLI lives in ~/.local/bin and keeps state in ~/.claude, neither of which
+# root should own. It authenticates with CLAUDE_CODE_OAUTH_TOKEN; note that
+# ANTHROPIC_API_KEY is deliberately never set, because its presence would make
+# the CLI bill the metered API instead of the subscription.
+RUN curl -fsSL https://claude.ai/install.sh | bash
+ENV PATH="/home/health/.local/bin:${PATH}" \
+    HOME=/home/health
+
 WORKDIR /app
 
 # No ENTRYPOINT: this package publishes several console scripts rather than one

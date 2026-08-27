@@ -1,14 +1,17 @@
-"""Tests for the advisor's loop and its bookkeeping.
+"""Tests for the advisor's driver and its bookkeeping.
 
-The loop is exercised against a fake client rather than the API: what matters
-here is that tool calls are dispatched and *recorded*, that a run which never
-concludes fails instead of storing half an opinion, and that a broken tool is
-reported to the model rather than ending the run. None of that needs a network.
+The advisor shells out to the Claude Code CLI, so the interesting tests run a
+*fake* CLI — a small script that writes an envelope and a query log. That
+exercises the real subprocess path, the real flags and the real parsing, which a
+mocked `subprocess.run` would not.
 """
 
 from __future__ import annotations
 
+import json
+import stat
 from datetime import date, datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -16,41 +19,7 @@ import pytest
 from apple_health import advisor
 
 
-class _Block(SimpleNamespace):
-    pass
-
-
-def _text(msg: str) -> _Block:
-    return _Block(type="text", text=msg)
-
-
-def _tool(name: str, tid: str = "t1", **inp) -> _Block:
-    return _Block(type="tool_use", name=name, id=tid, input=inp)
-
-
-class _Response(SimpleNamespace):
-    pass
-
-
-class _Client:
-    """Replays a scripted list of responses, recording the requests it got."""
-
-    def __init__(self, responses):
-        self._responses = list(responses)
-        self.requests = []
-        self.messages = self
-
-    def create(self, **kwargs):
-        self.requests.append(kwargs)
-        if not self._responses:
-            raise AssertionError("the loop asked for more turns than were scripted")
-        return self._responses.pop(0)
-
-
-def _resp(content, stop_reason):
-    return _Response(content=content, stop_reason=stop_reason,
-                     usage=SimpleNamespace(input_tokens=10, output_tokens=5))
-
+# --- doubles -----------------------------------------------------------------
 
 class _Cur:
     def __init__(self, answers=None):
@@ -90,87 +59,162 @@ class _Store:
             observed_through=datetime(2026, 8, 26, 9, 54, tzinfo=timezone.utc))
 
 
-# --- the loop ----------------------------------------------------------------
+def _fake_cli(tmp_path: Path, body: str) -> Path:
+    """A stand-in for `claude` that records its argv and environment."""
+    script = tmp_path / "fake-claude"
+    script.write_text("#!/bin/sh\n"
+                      f'printf "%s\\n" "$*" > {tmp_path}/argv\n'
+                      f'env > {tmp_path}/env\n'
+                      f"{body}\n")
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    return script
 
-def test_a_run_with_no_tool_calls_returns_its_text():
-    client = _Client([_resp([_text("  Easy walk, nothing to flag.  ")], "end_turn")])
-    run = advisor.converse(client, _Store(), "review it")
-    assert run.text == "Easy walk, nothing to flag."
-    assert run.calls == []
+
+def _envelope(result: str, **extra) -> str:
+    """The CLI emits a *list* of events; the last `result` one is the envelope."""
+    events = [
+        {"type": "system", "subtype": "init", "model": "claude-opus-5"},
+        {"type": "result", "subtype": "success", "result": result, "is_error": False,
+         "usage": {"input_tokens": 100, "output_tokens": 20},
+         "total_cost_usd": 0.012, "num_turns": 3, **extra},
+    ]
+    return f"cat <<'JSON'\n{json.dumps(events)}\nJSON"
 
 
-def test_every_tool_call_is_recorded(monkeypatch):
-    """`basis` is only worth storing if it is complete.
+# --- the token ---------------------------------------------------------------
 
-    A review is an opinion about data; the record of which queries produced it
-    is what makes it checkable a year later.
+def test_an_api_key_is_refused_rather_than_silently_billed(monkeypatch):
+    """An sk-ant-api key here would work, and change the billing.
+
+    The CLI accepts one and authenticates against the metered API instead of the
+    subscription. The run succeeds, so nothing surfaces until an invoice.
     """
-    monkeypatch.setattr(advisor, "_dispatch", lambda s, n, a: {"ok": n})
-    client = _Client([
-        _resp([_tool("context", "a")], "tool_use"),
-        _resp([_tool("session_detail", "b", workout_id=42)], "tool_use"),
-        _resp([_text("Solid session.")], "end_turn"),
-    ])
-    run = advisor.converse(client, _Store(), "review it")
-    assert [c["tool"] for c in run.calls] == ["context", "session_detail"]
-    assert run.calls[1]["input"] == {"workout_id": 42}
-    assert run.input_tokens == 30 and run.output_tokens == 15
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-api03-nope")
+    with pytest.raises(SystemExit, match="API key, not a Claude Code token"):
+        advisor.token()
 
 
-def test_parallel_tool_calls_in_one_turn_are_all_answered(monkeypatch):
-    """Every tool_use block needs a matching tool_result or the API rejects the turn."""
-    monkeypatch.setattr(advisor, "_dispatch", lambda s, n, a: {"ok": n})
-    client = _Client([
-        _resp([_tool("context", "a"), _tool("race_detail", "b")], "tool_use"),
-        _resp([_text("done")], "end_turn"),
-    ])
-    advisor.converse(client, _Store(), "go")
-    results = client.requests[1]["messages"][-1]["content"]
-    assert [r["tool_use_id"] for r in results] == ["a", "b"]
+def test_an_oauth_token_is_accepted(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-yes")
+    assert advisor.token() == "sk-ant-oat01-yes"
 
 
-def test_a_run_that_never_concludes_stores_nothing(monkeypatch):
-    """Better to fail than to persist a half-formed opinion."""
-    monkeypatch.setattr(advisor, "_dispatch", lambda s, n, a: {"ok": n})
-    client = _Client([_resp([_tool("context", f"t{i}")], "tool_use")
-                      for i in range(advisor.MAX_TURNS)])
-    with pytest.raises(RuntimeError, match="gave up"):
-        advisor.converse(client, _Store(), "go")
+def test_a_missing_token_says_how_to_make_one(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setattr(advisor, "_KEY_FILE", tmp_path / "absent")
+    with pytest.raises(SystemExit, match="claude setup-token"):
+        advisor.token()
 
 
-def test_an_empty_answer_is_an_error_not_an_empty_review():
+# --- running the CLI ---------------------------------------------------------
+
+def test_the_model_is_confined_to_ah_query(monkeypatch, tmp_path):
+    """The allowed-tools flag is the security boundary, not a preference.
+
+    Without it the model could read files and run arbitrary shell in a process
+    holding a database password.
+    """
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-x")
+    monkeypatch.setattr(advisor, "CLI", str(_fake_cli(tmp_path, _envelope("fine"))))
+    advisor.run_claude("go")
+    argv = (tmp_path / "argv").read_text()
+    assert "--allowed-tools Bash(ah-query:*)" in argv
+    assert "--output-format json" in argv
+
+
+def test_an_api_key_is_scrubbed_from_the_child(monkeypatch, tmp_path):
+    """If ANTHROPIC_API_KEY is set, the CLI bills the API instead of the plan."""
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-x")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-leak")
+    monkeypatch.setattr(advisor, "CLI", str(_fake_cli(tmp_path, _envelope("fine"))))
+    advisor.run_claude("go")
+    child_env = (tmp_path / "env").read_text()
+    assert "ANTHROPIC_API_KEY" not in child_env
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in child_env
+
+
+def test_the_queries_that_ran_are_recorded(monkeypatch, tmp_path):
+    """`basis` is read from what executed, not from the CLI's event stream."""
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-x")
+    body = ('printf \'{"query":"context","args":{}}\\n\' >> "$AH_QUERY_LOG"\n'
+            'printf \'{"query":"session","args":{"id":42}}\\n\' >> "$AH_QUERY_LOG"\n'
+            + _envelope("Solid session."))
+    monkeypatch.setattr(advisor, "CLI", str(_fake_cli(tmp_path, body)))
+    run = advisor.run_claude("go")
+    assert run.text == "Solid session."
+    assert [c["query"] for c in run.calls] == ["context", "session"]
+    assert run.calls[1]["args"] == {"id": 42}
+    assert run.cost_usd == 0.012 and run.turns == 3
+
+
+def test_a_nonzero_exit_stores_nothing(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-x")
+    monkeypatch.setattr(advisor, "CLI",
+                        str(_fake_cli(tmp_path, 'echo "usage limit reached" >&2\nexit 1')))
+    with pytest.raises(RuntimeError, match="exited 1"):
+        advisor.run_claude("go")
+
+
+def test_an_empty_result_is_an_error_not_a_blank_review(monkeypatch, tmp_path):
     """A blank review stored is a session that looks reviewed and says nothing."""
-    client = _Client([_resp([], "end_turn")])
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-x")
+    monkeypatch.setattr(advisor, "CLI", str(_fake_cli(tmp_path, _envelope("   "))))
     with pytest.raises(RuntimeError, match="no text"):
-        advisor.converse(client, _Store(), "go")
+        advisor.run_claude("go")
 
 
-# --- tool dispatch -----------------------------------------------------------
+def test_an_error_envelope_is_not_stored_as_a_review(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-x")
+    monkeypatch.setattr(advisor, "CLI",
+                        str(_fake_cli(tmp_path, _envelope("partial", is_error=True))))
+    with pytest.raises(RuntimeError, match="reported an error"):
+        advisor.run_claude("go")
 
-def test_a_bad_argument_is_returned_to_the_model_not_raised():
-    """The model can correct a malformed date; a raised error ends the run."""
-    out = advisor._dispatch(_Store(), "session_detail", {"workout_id": "not-a-number"})
-    assert "error" in out
+
+def test_unparseable_output_is_named_as_such(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-x")
+    monkeypatch.setattr(advisor, "CLI", str(_fake_cli(tmp_path, 'echo "not json"')))
+    with pytest.raises(RuntimeError, match="could not parse"):
+        advisor.run_claude("go")
 
 
-def test_an_unknown_tool_is_reported():
-    assert "unknown tool" in advisor._dispatch(_Store(), "drop_tables", {})["error"]
+def test_an_event_list_with_no_result_is_refused(monkeypatch, tmp_path):
+    """The CLI emits a list; reading it as an object gave a meaningless error."""
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-x")
+    body = """cat <<'JSON'
+[{"type":"system","subtype":"init"}]
+JSON"""
+    monkeypatch.setattr(advisor, "CLI", str(_fake_cli(tmp_path, body)))
+    with pytest.raises(RuntimeError, match="no result event"):
+        advisor.run_claude("go")
+
+
+def test_a_missing_cli_says_how_to_install_it(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-x")
+    monkeypatch.setattr(advisor, "CLI", "/nonexistent/claude")
+    with pytest.raises(RuntimeError, match="install.sh"):
+        advisor.run_claude("go")
+
+
+def test_a_corrupt_log_line_does_not_lose_the_rest(tmp_path):
+    log = tmp_path / "q.jsonl"
+    log.write_text('{"query":"context","args":{}}\nhalf-written\n'
+                   '{"query":"race","args":{}}\n')
+    assert [c["query"] for c in advisor._read_log(log)] == ["context", "race"]
 
 
 # --- basis -------------------------------------------------------------------
 
 def test_basis_records_the_coverage_and_the_bands():
-    """Both are needed to re-read the review later.
+    """Both are needed to re-read a review later.
 
-    Without the coverage instant, "no swimming" cannot be distinguished from
-    "the record stops here"; without the bands, no zone figure in it means
-    anything.
+    Without the coverage instant, "no swimming" cannot be told from "the record
+    stops here"; without the bands, no zone figure in it means anything.
     """
-    run = advisor.Run("text", [{"tool": "context", "input": {}}])
-    basis = run.basis(_Store())
+    basis = advisor.Run("text", [{"query": "context", "args": {}}]).basis(_Store())
     assert basis["observed_through"].startswith("2026-08-26")
     assert "Z3 160-169" in basis["zone_bands"]
-    assert basis["tool_calls"] == [{"tool": "context", "input": {}}]
+    assert basis["queries"] == [{"query": "context", "args": {}}]
     assert basis["model"] == advisor.MODEL
 
 
@@ -196,7 +240,8 @@ def test_a_review_replaces_rather_than_duplicates():
 
 def test_the_plan_carries_where_it_came_from():
     store = _Store()
-    advisor.store_plan(store, advisor.Run("## Where you are\nFine.", [{"tool": "context"}]))
+    advisor.store_plan(store, advisor.Run("## Where you are\nFine.",
+                                          [{"query": "context"}]))
     _sql, params = store.cur.executed[0]
     body = params[1]
     assert "Where you are" in body
@@ -204,66 +249,11 @@ def test_the_plan_carries_where_it_came_from():
     assert advisor.MODEL in body
 
 
-def test_a_truncated_answer_is_not_stored_as_a_finished_one():
-    """max_tokens mid-sentence must fail, not persist a review that stops dead."""
-    client = _Client([_resp([_text("The session started well and then")], "max_tokens")])
-    with pytest.raises(RuntimeError, match="max_tokens"):
-        advisor.converse(client, _Store(), "go")
+# --- the prompt --------------------------------------------------------------
 
-
-# --- credentials -------------------------------------------------------------
-
-def test_an_oauth_token_is_sent_as_a_bearer_not_an_api_key(monkeypatch):
-    """Passing an OAuth token as api_key returns 401 'API key is invalid'.
-
-    That reads like a bad secret rather than the wrong header, and cost a
-    diagnosis once already.
-    """
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-oat01-abc")
-    assert advisor.credential() == {"auth_token": "sk-ant-oat01-abc"}
-
-
-def test_an_api_key_is_sent_as_an_api_key(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-abc")
-    assert advisor.credential() == {"api_key": "sk-ant-api03-abc"}
-
-
-def test_a_missing_credential_says_where_to_put_one(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-    monkeypatch.setattr(advisor, "_KEY_FILE", advisor.Path("/nonexistent/key"))
-    with pytest.raises(SystemExit, match="No credential"):
-        advisor.credential()
-
-
-# --- telling a refusal from a throttle ---------------------------------------
-# Both arrive as 429. Reading one as the other cost a wrong diagnosis once:
-# "the account is busy, wait" when the credential was simply not valid for this
-# API and waiting would never have helped.
-
-class _Resp(SimpleNamespace):
-    pass
-
-
-def test_a_429_with_rate_limit_headers_is_a_real_throttle():
-    exc = SimpleNamespace(response=_Resp(
-        status_code=429, headers={"retry-after": "30",
-                                  "anthropic-ratelimit-requests-remaining": "0"}))
-    assert "rate limited" in advisor._explain(exc, {"api_key": "sk-ant-api03-x"})
-
-
-def test_a_429_without_them_on_an_oauth_token_is_named_a_refusal():
-    exc = SimpleNamespace(response=_Resp(status_code=429, headers={}))
-    msg = advisor._explain(exc, {"auth_token": "sk-ant-oat01-x"})
-    assert "not throttled" in msg
-    assert "Waiting will not help" in msg
-
-
-def test_a_429_without_them_on_an_api_key_still_says_refused():
-    exc = SimpleNamespace(response=_Resp(status_code=429, headers={}))
-    assert "refused rather than throttled" in advisor._explain(
-        exc, {"api_key": "sk-ant-api03-x"})
-
-
-def test_other_errors_are_reported_as_themselves():
-    assert "ValueError" in advisor._explain(ValueError("boom"), {"api_key": "x"})
+def test_the_task_names_the_command_to_run():
+    """The tools live in the prompt: a CLI invocation has no tool schema."""
+    task = advisor.REVIEW_TASK.format(workout_id=42)
+    assert "ah-query session --id 42" in task
+    assert "ah-query context" in task
+    assert "Absence of data is never evidence of absence of training" in task
