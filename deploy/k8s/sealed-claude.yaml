@@ -1,0 +1,13 @@
+---
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: apple-health-claude
+  namespace: apple-health
+spec:
+  encryptedData:
+    CLAUDE_CODE_OAUTH_TOKEN: AgAKXib6noxiT/AiBrp5yGum3qf/T7yegYxkfEET9k32gh+DUT/qaFJuvGFMJGvFfHT5xyEKFz/NLGSGAA0ufhhTvZPWklQ+xT1FVCO/oFgAfQHXR5E9ELkQD+wg4e9+dTxlRpqpaZ5l5kskg2fRZf8HVSWSC06cPmLraSbJnOHfPdJQIYki2sZZJRku6u4uH67a/7Fc7hGnQSnymw60lBDcyBKz2RrzKTSmXQqgf3npkru4BaUU/PWDKF5zF5sQVafTossvS7rDUhpKSyCp1Nnd9lFN1gegC9E9tBADDEBkQWVy5jOObbR8UKLWoGacJfkQVc8PGkhBp0WfhK/+jxxCFarN/ChaaywejVuiAHrBM6JsTXifqHzdTOhKB37vU8iMwsH21aonZ1IviU0l34krzYfNN4pp3bYw7KksMv1KkNaGqMbvaK0Ho1Ld/8/uLToa06YJoU7VkVmEFtnyYyW3hSBDaMyuqWE4cfHdfE/vMPea1CkByFMLTlXNj/rQmBGlo3h/DyXaRXyohA2GP13zxm7ktrGoPGpJ3b+Tv9nk7Ce0v3xrvh5E6IoBeBN9+AuBmei95d0gZomar2+AjSLsap5cVD5baYnRt18RZLMIarX+pO7eqqC6sUrTTIeXJqI1SrM46iHXxujm0Ms2R7phUPwmcfneEPp09W83rTp52pCm8FXpjW70MIkuEDh+QVROU4bi8jo4+pEiGq+btpWWlo7Mf80Qp4vrpRBy/j2SPouMQkY8vvnyNzUKwI+xWAznvo+l6DAn2xANxLFM/KR2lWfkUBKP2FRZoVS407iLzO7hFGbO11GaSJfRGrI0/gnoiOcMo1cpfRcYvSU=
+  template:
+    metadata:
+      name: apple-health-claude
+      namespace: apple-health

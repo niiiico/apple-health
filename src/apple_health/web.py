@@ -1,4 +1,4 @@
-"""The interaction layer: one page, four write actions, three probes.
+"""The interaction layer: one page, the advisor, and a conversation.
 
 ADR-006 corollary (g). This is where the facts no sensor produces get recorded —
 the zone model the watch was actually using, why a week went quiet, what a
@@ -39,6 +39,14 @@ from . import queries, ui
 from .store import Store
 
 WINDOW_DAYS = 45
+
+
+def _as_int(value: Any, field: str) -> int:
+    """Parse a whole number, naming the field when it will not parse."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field} must be a whole number, got {value!r}") from None
 
 
 def _as_date(value: Any, field: str) -> date:
@@ -84,10 +92,7 @@ def archive_goal(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
     Archived rather than removed: a plan written towards a goal is only
     intelligible if the goal it was written towards still exists.
     """
-    try:
-        goal_id = int(payload.get("id"))
-    except (TypeError, ValueError):
-        raise ValueError("id is required and must be a whole number") from None
+    goal_id = _as_int(payload.get("id"), "id")
     with store.cursor() as cur:
         cur.execute("UPDATE goals SET archived_at = now()"
                     " WHERE id = %s AND archived_at IS NULL", (goal_id,))
@@ -146,7 +151,69 @@ def set_period_note(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
     return {"message": "period recorded"}
 
 
+# --- asking Claude -----------------------------------------------------------
+# These run the Claude Code CLI, which takes a minute or two. The server is
+# threaded, so a slow request occupies one thread rather than blocking the page;
+# what it does need is an oauth2-proxy `--upstream-timeout` longer than the
+# default 30s, or the proxy gives up before the model answers and it looks like
+# an application fault. See deploy/k8s/apple-health.yaml.
+
+
+def review_session(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
+    """Have the advisor review one session, and store the result.
+
+    The model never writes: it returns text, and this stores it. Re-running
+    replaces the previous review rather than adding a second.
+    """
+    from . import advisor
+
+    workout_id = _as_int(payload.get("workout_id"), "workout_id")
+    with store.cursor() as cur:
+        cur.execute("SELECT 1 FROM workouts WHERE id = %s", (workout_id,))
+        if cur.fetchone() is None:
+            raise ValueError(f"no session {workout_id}")
+
+    run = advisor.run_claude(advisor.REVIEW_TASK.format(workout_id=workout_id))
+    advisor.store_review(store, workout_id, run)
+    return {"message": f"analysée ({len(run.calls)} requêtes)", "review": run.text}
+
+
+def write_plan(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite the standing plan from the goals and recent training."""
+    from . import advisor
+    from datetime import date as _date
+
+    run = advisor.run_claude(advisor.PLAN_TASK.format(today=_date.today().isoformat()))
+    advisor.store_plan(store, run)
+    return {"message": f"plan réécrit ({len(run.calls)} requêtes)"}
+
+
+def chat(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
+    """One conversational turn.
+
+    `session_id` threads the conversation. It is the CLI's own, kept in the
+    pod's filesystem, so it does not survive a restart — the reply is returned
+    to the browser rather than stored, because a chat is a question answered,
+    not a fact about the training record. Anything worth keeping goes in a note
+    or a review.
+    """
+    from . import advisor
+
+    message = (payload.get("message") or "").strip()
+    if not message:
+        raise ValueError("message is required")
+    if len(message) > 4000:
+        raise ValueError("message is too long")
+
+    run = advisor.chat(message, payload.get("session_id") or None)
+    return {"message": "", "reply": run.text, "session_id": run.session_id,
+            "queries": [c.get("query") for c in run.calls]}
+
+
 ACTIONS: dict[str, Callable[[Store, dict[str, Any]], dict[str, Any]]] = {
+    "review_session": review_session,
+    "write_plan": write_plan,
+    "chat": chat,
     "set_goal": set_goal,
     "archive_goal": archive_goal,
     "set_session_note": set_session_note,

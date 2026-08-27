@@ -304,3 +304,57 @@ def test_healthz_fails_when_the_database_is_unreachable():
             assert _json.loads(exc.read())["ok"] is False
         else:
             pytest.fail("/healthz reported healthy with no reachable database")
+
+
+# --- asking Claude -----------------------------------------------------------
+
+def test_analysing_an_unknown_session_is_refused():
+    """Otherwise a typo spends a minute of model time and stores a review of nothing."""
+    with pytest.raises(ValueError, match="no session"):
+        web.review_session(_Store([None]), {"workout_id": 999999})
+
+
+def test_analysing_needs_a_numeric_id():
+    with pytest.raises(ValueError, match="whole number"):
+        web.review_session(_Store(), {"workout_id": "../etc/passwd"})
+
+
+def test_a_chat_turn_needs_a_message():
+    with pytest.raises(ValueError, match="required"):
+        web.chat(_Store(), {"message": "   "})
+
+
+def test_an_enormous_chat_message_is_refused():
+    with pytest.raises(ValueError, match="too long"):
+        web.chat(_Store(), {"message": "x" * 4001})
+
+
+def test_a_chat_turn_threads_the_conversation(monkeypatch):
+    """Without the session id every turn starts over and forgets the question before."""
+    seen = {}
+
+    def _chat(message, session_id=None, **kw):
+        seen["message"], seen["session"] = message, session_id
+        from apple_health.advisor import Run
+        return Run("ça tient.", [{"query": "session", "args": {"id": 1}}],
+                   session_id="sess-2")
+
+    monkeypatch.setattr("apple_health.advisor.chat", _chat)
+    out = web.chat(_Store(), {"message": "et mardi ?", "session_id": "sess-1"})
+    assert seen == {"message": "et mardi ?", "session": "sess-1"}
+    assert out["reply"] == "ça tient." and out["session_id"] == "sess-2"
+    assert out["queries"] == ["session"]
+
+
+def test_a_chat_turn_stores_nothing(monkeypatch):
+    """A chat is a question answered, not a fact about the training record.
+
+    Anything worth keeping is a note, a goal or a review — all of which are
+    stored deliberately and are attributable.
+    """
+    from apple_health.advisor import Run
+    monkeypatch.setattr("apple_health.advisor.chat",
+                        lambda *a, **k: Run("oui", [], session_id="s"))
+    store = _Store()
+    web.chat(store, {"message": "alors ?"})
+    assert store.cur.executed == [] and not store.committed

@@ -51,6 +51,40 @@ def zone_bands_section(model: dict) -> str:
 </div>"""
 
 
+def chat_section() -> str:
+    """A conversation box.
+
+    Empty on load and never restored: the transcript lives in the CLI's own
+    state in the pod, so a reload starts fresh. That is deliberate rather than a
+    limitation — a chat is a question answered, and anything worth keeping is a
+    note, a goal or a review, all of which are stored.
+    """
+    return """<h2>Demander</h2>
+<div class="card chat" data-card data-chat>
+  <div data-transcript class="transcript"></div>
+  <textarea data-field="message" rows="2"
+    placeholder="par ex. « la nage de mardi, c'était correct ? »"></textarea>
+  <button data-action="chat" data-chat-send>Envoyer</button>
+  <span data-status></span>
+</div>"""
+
+
+def plan_section(plan: dict | None) -> str:
+    """The standing plan, and the button that rewrites it."""
+    if plan and plan.get("body"):
+        body = (f'<div class="doc">{_esc(plan["body"])}</div>'
+                f'<p class="note">Réécrit le {_esc(plan["updated_at"][:16])}.</p>')
+    else:
+        body = ('<p class="note">Aucun plan écrit pour l\'instant. Il est rédigé '
+                "à partir des objectifs ci-dessus et de l'entraînement récent.</p>")
+    return f"""<h2>Plan</h2>
+<div class="card" data-card>
+  {body}
+  <button data-action="write_plan" data-reload="1" data-slow>Réécrire le plan</button>
+  <span data-status></span>
+</div>"""
+
+
 def goals_section(goals: list[dict]) -> str:
     """What you are training for, and the form to say so.
 
@@ -169,7 +203,9 @@ def render(context: dict, sessions: list[dict], start: date, end: date) -> str:
         "<h1>health</h1>"
         + coverage_line(context["coverage"])
         + window_nav(start, end, context["record"])
+        + chat_section()
         + goals_section(context["goals"])
+        + plan_section(context.get("plan"))
         + zone_bands_section(context["zone_model"])
         + period_notes_section(context["period_notes"])
         + sessions_section(sessions)
@@ -190,6 +226,21 @@ def render_session(detail: dict) -> str:
             '<p><a class="btn" href="/">back</a></p>')
 
     s, hr, zm = detail["session"], detail.get("hr"), detail["zone_model"]
+    review = detail.get("review")
+    if review:
+        review_html = (
+            f'<div class="doc">{_esc(review["review"])}</div>'
+            f'<p class="note">Écrite le {_esc(review["created_at"][:16])} par '
+            f'{_esc(review["model"])}, sur un record couvert jusqu\'au '
+            f'{_esc((review.get("observed_through") or "?")[:16])}.</p>')
+    else:
+        review_html = ('<p class="note">Pas encore analysée.</p>')
+    review_section = (
+        f'<h2>Analyse</h2><div class="card" data-card>{review_html}'
+        f'<button data-action="review_session" data-reload="1" data-slow '
+        f'data-arg-workout_id="{int(s["id"])}">'
+        + ("Réanalyser" if review else "Analyser cette séance") +
+        '</button> <span data-status></span></div>')
     stats = " · ".join(x for x in (
         _num(s.get("distance_km"), 2, " km") if s.get("distance_km") else "",
         _num(s.get("duration_min"), 0, " min") if s.get("duration_min") else "",
@@ -235,7 +286,7 @@ def render_session(detail: dict) -> str:
         f'<h1>{_esc(s["date"])} — {_esc(s["activity"])}</h1>'
         f'<p class="cov">{_esc(stats)} · started {_esc(s["started_at"][11:16])} '
         f'{_esc(s.get("tz") or "")}</p>'
-        + coverage_line(detail["coverage"]) + hr_html + laps_html
+        + coverage_line(detail["coverage"]) + review_section + hr_html + laps_html
         + f'<h2>Note</h2><div class="card" data-card>'
         f'<input type="hidden" data-field="workout_id" value="{s["id"]}">'
         f'<textarea data-field="note" placeholder="how it went, what changed, '

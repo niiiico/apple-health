@@ -67,6 +67,10 @@ def context(store: Store, tz: tzinfo | None = None) -> dict:
                   "note": r["note"]} for r in cur.fetchall()]
         cur.execute("SELECT min(started_at) lo, max(started_at) hi, count(*) n FROM workouts")
         span = cur.fetchone()
+        cur.execute("SELECT body, updated_at FROM documents WHERE slug = 'plan'")
+        row = cur.fetchone()
+        plan = ({"body": row["body"], "updated_at": row["updated_at"].isoformat()}
+                if row else None)
         cur.execute("SELECT id, goal, target_date FROM goals WHERE archived_at IS NULL"
                     " ORDER BY target_date NULLS LAST, created_at")
         goals = [{"id": r["id"], "goal": r["goal"],
@@ -86,6 +90,7 @@ def context(store: Store, tz: tzinfo | None = None) -> dict:
         # the same as "no goals", and advice given without one should say so
         # rather than inventing a plausible objective to advise towards.
         "goals": goals,
+        "plan": plan,
     }
 
 
@@ -164,6 +169,15 @@ def session_detail(store: Store, workout_id: int, tz: tzinfo | None = None) -> d
                              for lab, a, mx in thirds(series)],
         }
 
+    with store.cursor() as cur:
+        cur.execute("SELECT review, model, created_at,"
+                    " basis->>'observed_through' AS observed_through"
+                    " FROM session_reviews WHERE workout_id = %s", (workout_id,))
+        row = cur.fetchone()
+        review = ({"review": row["review"], "model": row["model"],
+                   "created_at": row["created_at"].isoformat(),
+                   "observed_through": row["observed_through"]} if row else None)
+
     return {
         "coverage": _coverage(store, day, tz),
         "zone_model": _zone_basis(),
@@ -178,6 +192,10 @@ def session_detail(store: Store, workout_id: int, tz: tzinfo | None = None) -> d
         "hr": hr,
         "laps": [{"idx": l["idx"], "duration_s": l["duration_s"],
                   "distance_m": l["distance_m"]} for l in laps] or None,
+        # The advisor's own reading of this session, if it has written one. Kept
+        # apart from `session.note`, which is the athlete's: a model's opinion
+        # and the athlete's recollection must never become indistinguishable.
+        "review": review,
     }
 
 

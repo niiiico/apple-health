@@ -54,4 +54,11 @@ kubectl create secret generic apple-health-certs --namespace apple-health \
   --from-file=apple_health.key="$CERTS/apple_health.key" \
   --dry-run=client -o yaml | seal > deploy/k8s/sealed-certs.yaml
 
-echo "sealed -> deploy/k8s/sealed-db.yaml deploy/k8s/sealed-oauth2.yaml deploy/k8s/sealed-certs.yaml"
+# The Claude Code subscription token (`claude setup-token`), for the advisor and
+# the chat box. NOT an API key: an sk-ant-api key here would make the CLI bill
+# the metered API instead, succeed, and say nothing about it.
+kubectl create secret generic apple-health-claude --namespace apple-health \
+  --from-file=CLAUDE_CODE_OAUTH_TOKEN="$HOME/.config/apple-health/claude-token" \
+  --dry-run=client -o yaml | seal > deploy/k8s/sealed-claude.yaml
+
+echo "sealed -> deploy/k8s/sealed-db.yaml deploy/k8s/sealed-oauth2.yaml deploy/k8s/sealed-certs.yaml deploy/k8s/sealed-claude.yaml"

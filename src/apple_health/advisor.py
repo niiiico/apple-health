@@ -254,6 +254,35 @@ This document is rewritten in full each time, so it should read as current on it
 own, without reference to previous versions."""
 
 
+CHAT_TASK = SYSTEM + "\n\n" + TOOLS_DOC + """
+
+The athlete is asking you something directly. Answer it.
+
+This is a conversation, not a report: answer what was asked, at the length the \
+question deserves, and stop. No headings unless the answer genuinely needs them.
+
+Query for anything factual — you have the whole record, and guessing at a number \
+you could have looked up is the one unforgivable move here. If the answer depends \
+on something the record cannot tell you, say which part and why.
+
+Their question:
+
+{message}"""
+
+
+def chat(message: str, session_id: str | None = None,
+         timeout: float = 300.0) -> Run:
+    """One conversational turn, continuing `session_id` when given.
+
+    The first turn carries the full instructions; later turns carry only the
+    question, because the CLI has the earlier ones in the resumed transcript.
+    Re-sending them would pay for the same tokens every turn and, worse, let a
+    later copy quietly disagree with the first.
+    """
+    task = message if session_id else CHAT_TASK.format(message=message)
+    return run_claude(task, timeout=timeout, resume=session_id)
+
+
 @dataclass
 class Run:
     """One completed conversation: the text produced, and what it looked at."""
@@ -264,6 +293,7 @@ class Run:
     output_tokens: int = 0
     cost_usd: float | None = None
     turns: int | None = None
+    session_id: str | None = None
 
     def basis(self, store: Store) -> dict[str, Any]:
         """What the opinion was formed from, for storing beside it.
@@ -284,7 +314,7 @@ class Run:
         }
 
 
-def run_claude(task: str, timeout: float = 900.0) -> Run:
+def run_claude(task: str, timeout: float = 900.0, resume: str | None = None) -> Run:
     """Run one Claude Code invocation and return its text and what it queried.
 
     `--allowed-tools` is the security boundary: the model may run `ah-query` and
@@ -304,12 +334,18 @@ def run_claude(task: str, timeout: float = 900.0) -> Run:
         log = Path(work) / "queries.jsonl"
         env["AH_QUERY_LOG"] = str(log)
         try:
+            argv = [CLI, "-p", task,
+                    "--allowed-tools", ALLOWED_TOOLS,
+                    "--output-format", "json",
+                    "--model", MODEL]
+            if resume:
+                # Continues an existing conversation. The transcript lives in
+                # the CLI's own state under $HOME, so it does not survive a pod
+                # restart — chat history is deliberately ephemeral, while
+                # anything worth keeping is written to the database instead.
+                argv += ["--resume", resume]
             proc = subprocess.run(
-                [CLI, "-p", task,
-                 "--allowed-tools", ALLOWED_TOOLS,
-                 "--output-format", "json",
-                 "--model", MODEL],
-                cwd=work, env=env, stdin=subprocess.DEVNULL,
+                argv, cwd=work, env=env, stdin=subprocess.DEVNULL,
                 capture_output=True, text=True, timeout=timeout)
         except FileNotFoundError:
             raise RuntimeError(
@@ -336,7 +372,8 @@ def run_claude(task: str, timeout: float = 900.0) -> Run:
                input_tokens=usage.get("input_tokens", 0),
                output_tokens=usage.get("output_tokens", 0),
                cost_usd=envelope.get("total_cost_usd"),
-               turns=envelope.get("num_turns"))
+               turns=envelope.get("num_turns"),
+               session_id=envelope.get("session_id"))
 
 
 def _envelope(stdout: str) -> dict[str, Any]:

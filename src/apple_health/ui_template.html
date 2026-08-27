@@ -51,6 +51,13 @@
   .nav form.range { display:flex; gap:.4rem; align-items:center; flex:1 }
   .nav form.range input { margin-top:0; width:auto; flex:1 }
   .nav form.range button { margin-top:0 }
+  .transcript { max-height:26rem; overflow-y:auto; margin-bottom:.6rem }
+  .transcript:empty { display:none }
+  .turn { white-space:pre-wrap; padding:.5rem .7rem; border-radius:6px; margin:.4rem 0 }
+  .turn.you { background:var(--accent-bg, rgba(127,127,127,.12)); font-weight:600 }
+  .turn.claude { background:transparent }
+  .doc { white-space:pre-wrap; line-height:1.5 }
+  button[disabled] { opacity:.55; cursor:progress }
 </style>
 <main>__BODY__</main>
 <script>
@@ -80,10 +87,72 @@ document.addEventListener("click", async (e) => {
   for (const [k, v] of Object.entries(b.dataset)) {
     if (k.startsWith("arg")) payload[k.slice(3).toLowerCase()] = v;
   }
+  // A minute or two is normal for anything that asks Claude, so say so rather
+  // than looking hung. Without this the page appears frozen and gets reloaded
+  // mid-run, which wastes the answer.
+  if (b.dataset.slow) b.disabled = true;
   const status = (card || b.parentElement).querySelector("[data-status]")
               || b.insertAdjacentElement("afterend", Object.assign(
                    document.createElement("span"), {className: "note"}));
+  if (b.dataset.slow) status.textContent = "en cours… (une minute ou deux)";
+
+  // Chat keeps its thread on the page rather than reloading it away.
+  if (b.dataset.action === "chat") {
+    const chat = b.closest("[data-chat]");
+    const box = chat.querySelector("[data-field=message]");
+    const transcript = chat.querySelector("[data-transcript]");
+    const asked = (box.value || "").trim();
+    if (!asked) { status.textContent = "…?"; b.disabled = false; return; }
+    payload.session_id = chat.dataset.session || null;
+    say(transcript, "you", asked);
+    box.value = "";
+    b.disabled = true; status.textContent = "…";
+    const r = await ask(payload);
+    b.disabled = false;
+    if (r.error) { status.textContent = r.error; status.className = "note warn"; return; }
+    status.textContent = ""; 
+    if (r.session_id) chat.dataset.session = r.session_id;
+    say(transcript, "claude", r.reply, r.queries);
+    return;
+  }
+
   const ok = await post(b.dataset.action, payload, status);
+  if (b.dataset.slow) b.disabled = false;
   if (ok && b.dataset.reload) setTimeout(() => location.reload(), 400);
+});
+
+async function ask(payload) {
+  try {
+    const r = await fetch("/api/chat", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload)
+    });
+    return await r.json();
+  } catch (e) { return {error: String(e)}; }
+}
+
+function say(transcript, who, text, queries) {
+  const el = document.createElement("div");
+  el.className = "turn " + who;
+  // textContent, never innerHTML: the reply is model output and the question is
+  // typed by hand, and neither should be able to put markup in this page.
+  el.textContent = text;
+  if (queries && queries.length) {
+    const note = document.createElement("div");
+    note.className = "note";
+    note.textContent = queries.length + " requête(s) : " + queries.join(", ");
+    el.appendChild(note);
+  }
+  transcript.appendChild(el);
+  transcript.scrollTop = transcript.scrollHeight;
+}
+
+// Enter sends, shift-enter makes a new line.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" || e.shiftKey) return;
+  const box = e.target.closest("textarea[data-field=message]");
+  if (!box) return;
+  e.preventDefault();
+  box.closest("[data-chat]").querySelector("[data-chat-send]").click();
 });
 </script>

@@ -84,6 +84,17 @@ spec:
                 name: apple-health-config
             - secretRef:
                 name: apple-health-db
+          env:
+            # Authenticates the Claude Code CLI, which the advisor and the chat
+            # box both drive. ANTHROPIC_API_KEY is deliberately absent and must
+            # stay absent: if it were set the CLI would authenticate against the
+            # metered API instead of the subscription, the run would succeed,
+            # and nothing would surface until an invoice.
+            - name: CLAUDE_CODE_OAUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: apple-health-claude
+                  key: CLAUDE_CODE_OAUTH_TOKEN
           ports:
             - name: http
               containerPort: 8765
@@ -192,6 +203,10 @@ spec:
             # backend with no browser and no cookie.
             - --skip-auth-route=^/healthz$
             - --skip-auth-route=^/livez$
+            # Asking Claude takes a minute or two. The default upstream timeout
+            # is 30s, which would cut the request off mid-answer and surface as
+            # a 502 that looks like an application fault rather than a timeout.
+            - --upstream-timeout=300s
           env:
             - name: OAUTH2_PROXY_CLIENT_SECRET
               valueFrom:
