@@ -209,3 +209,28 @@ def test_a_truncated_answer_is_not_stored_as_a_finished_one():
     client = _Client([_resp([_text("The session started well and then")], "max_tokens")])
     with pytest.raises(RuntimeError, match="max_tokens"):
         advisor.converse(client, _Store(), "go")
+
+
+# --- credentials -------------------------------------------------------------
+
+def test_an_oauth_token_is_sent_as_a_bearer_not_an_api_key(monkeypatch):
+    """Passing an OAuth token as api_key returns 401 'API key is invalid'.
+
+    That reads like a bad secret rather than the wrong header, and cost a
+    diagnosis once already.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-oat01-abc")
+    assert advisor.credential() == {"auth_token": "sk-ant-oat01-abc"}
+
+
+def test_an_api_key_is_sent_as_an_api_key(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-abc")
+    assert advisor.credential() == {"api_key": "sk-ant-api03-abc"}
+
+
+def test_a_missing_credential_says_where_to_put_one(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setattr(advisor, "_KEY_FILE", advisor.Path("/nonexistent/key"))
+    with pytest.raises(SystemExit, match="No credential"):
+        advisor.credential()

@@ -49,6 +49,7 @@ from .store import Store
 
 MODEL = "claude-opus-5"
 _KEY_VAR = "ANTHROPIC_API_KEY"
+_OAUTH_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
 _KEY_FILE = Path.home() / ".config/apple-health/anthropic-key"
 
 # How far back `review` looks for unreviewed sessions by default. Not a filter
@@ -64,20 +65,33 @@ MAX_TURNS = 12
 PLAN_SLUG = "plan"
 
 
-def _api_key() -> str:
-    """The API key, from the environment or the same 0600 file the DB uses."""
-    from_env = os.environ.get(_KEY_VAR)
-    if from_env:
-        return from_env
-    try:
-        key = _KEY_FILE.read_text().strip()
-    except OSError:
-        key = ""
-    if not key:
+def credential() -> dict[str, str]:
+    """Client kwargs for whichever credential is available.
+
+    Two kinds authenticate, and they are not interchangeable:
+
+    - ``sk-ant-api…`` — an API key, sent as ``x-api-key``. Billed per token.
+    - ``sk-ant-oat…`` — a Claude Code OAuth token, sent as ``Authorization:
+      Bearer``. Drawn against a *subscription*, so it shares its limits with
+      every interactive Claude session on the same account — a long review run
+      and a person working can rate-limit each other.
+
+    Passing an OAuth token as ``api_key`` returns 401 "API key is invalid",
+    which reads like a bad secret rather than the wrong header, so the prefix
+    is checked here instead of leaving it to be diagnosed at 3am.
+    """
+    token = os.environ.get(_KEY_VAR) or os.environ.get(_OAUTH_VAR) or ""
+    if not token:
+        try:
+            token = _KEY_FILE.read_text().strip()
+        except OSError:
+            token = ""
+    if not token:
         raise SystemExit(
-            f"No API key. Set {_KEY_VAR} or write it to {_KEY_FILE} (mode 0600)."
+            f"No credential. Set {_KEY_VAR} or {_OAUTH_VAR}, or write one to "
+            f"{_KEY_FILE} (mode 0600)."
         )
-    return key
+    return {"auth_token": token} if token.startswith("sk-ant-oat") else {"api_key": token}
 
 
 # --- the tools ---------------------------------------------------------------
@@ -423,7 +437,10 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     import anthropic
-    client = anthropic.Anthropic(api_key=_api_key())
+    # A CronJob has nobody to retry it by hand, and a subscription token shares
+    # its rate limit with interactive use, so 429s are expected rather than
+    # exceptional. The SDK retries these with backoff.
+    client = anthropic.Anthropic(max_retries=6, timeout=600.0, **credential())
     store = Store(None)
     try:
         if args.command == "review":
