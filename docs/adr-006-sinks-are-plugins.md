@@ -85,14 +85,31 @@ explicitly when a requested range extends past it. `max(started_at)` is not a
 substitute — it reports the last workout, which during a rest week is not the
 same question.
 
-**c. Zone models are dated.** HR zones are defined on the watch and change.
-HealthKit exposes zones only for live workout building
-(`HKLiveWorkoutZoneUpdate`), with no read-back of historical boundaries, so they
-are recorded by hand with an `effective_from` date. Zone numbers are meaningless
-without the model that produced them, so responses carry both. Classification
-defaults to the model in effect on the session's date; a fixed model can be
-pinned for cross-period comparison, because a zone edit must not read as a
-fitness change.
+**c. Zone numbers travel with the model that produced them.** HR zones are
+defined on the watch, and HealthKit exposes them only for live workout building
+(`HKLiveWorkoutZoneUpdate`) — there is no read-back of historical boundaries. So
+the bands cannot be discovered; they can only be stated. Every response carries
+them, because "Z3 4:52" is meaningless without them.
+
+**One model, not a dated series — revised 2026-08-27.** This originally
+specified dated models with an `effective_from`, and `hr_zone_models` was built
+for it. That was machinery for a change that has not happened: the boundaries
+have not moved, and there is one set of bands for the whole record, in
+`derive/zones.py`.
+
+It was also actively harmful. The dated model was looked up and *reported* but
+never reached the arithmetic — `summarize()` and `zone_durations()` classify via
+the module constant, and take no bands argument. So recording a model would have
+printed one set of bands above numbers computed with another: a stated basis
+that is not the basis, which is this ADR's own failure mode arriving through the
+feature meant to prevent it. The write path is removed rather than left as a
+trap, and a test now pins that the reported bands are the ones that classify.
+
+`hr_zone_models` stays in the schema, empty and unread, for the day the
+boundaries actually change. Populating it means first making `derive.zones`
+classify by it. Until then the honest cost is stated plainly: if the watch's
+bands change, every figure becomes wrong for sessions before the change, with
+nothing to signal it.
 
 **d. Store primitives, derive summaries.** HR samples, laps and route points go
 into the database; zone distributions, drift and cadence are computed at query
@@ -193,9 +210,11 @@ Two things this turned up that were not obvious:
 - **We give up live arbitrary questions from the phone while away from home.**
   The brief answers what it anticipated; anything else waits for the LAN or the
   next run. This is the price of (e) and it is accepted deliberately.
-- **The zone model becomes a thing that must be maintained.** An unrecorded
-  change silently mis-classifies every session after it. The interaction layer
-  is the mitigation and the reason (g) is not optional.
+- **The zone model is a thing that must be maintained by hand.** Nothing can
+  detect a change to the watch's bands, so a change that is not noticed silently
+  mis-classifies every session before it. There is no mitigation in the code —
+  only the fact that the bands are printed on every surface, so a figure that
+  stops matching the watch is at least visible.
 - **`sources/healthsync.py` and the phone exporter owe laps.** The tool contract
   specifies them because the coaching already depends on them; until the source
   provides them, `has_laps` is `false` and honest.

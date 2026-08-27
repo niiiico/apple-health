@@ -36,44 +36,18 @@ def coverage_line(coverage: dict) -> str:
             f" — anything after that is unknown, not absent.</p>")
 
 
-def zone_models_section(models: list[dict]) -> str:
-    """The dated zone timeline, plus the form to add to it.
+def zone_bands_section(model: dict) -> str:
+    """State the bands every zone figure on this page was computed with.
 
-    An empty timeline is called out rather than left blank: every zone number in
-    the system is silently using built-in bands until something is recorded here.
+    Shown rather than assumed: "Z3 4:52" means nothing without them. One line,
+    matching how the session files and Vault briefs print the same thing — the
+    labels already carry their ranges, so a two-column table said it twice.
     """
-    if models and models[0].get("source") != "default":
-        rows = "".join(
-            f"<tr><td>{_esc(m['effective_from'])}</td><td>{_esc(m['source'])}</td>"
-            f"<td>{_esc(m['boundaries']['z1'])}</td><td>{_esc(m['boundaries']['z2'])}</td>"
-            f"<td>{_esc(m['boundaries']['z3'])}</td><td>{_esc(m['boundaries']['z4'])}</td>"
-            f"<td>{_esc(m['boundaries']['z5'])}</td><td>{_esc(m.get('note'))}</td></tr>"
-            for m in models)
-        table = ("<table><tr><th>from</th><th>source</th><th>Z1</th><th>Z2</th>"
-                 f"<th>Z3</th><th>Z4</th><th>Z5</th><th>note</th></tr>{rows}</table>")
-    else:
-        table = ('<p class="note warn">None recorded. Every zone figure in the system — '
-                 "the Vault files, the session archive, the advisor — is using the "
-                 "built-in bands, not what your watch actually showed. Add the model "
-                 "in force and the ones before it.</p>")
-
-    today = date.today().isoformat()
+    bands = " · ".join(_esc(label) for label in model["boundaries"])
     return f"""<h2>Heart-rate zones</h2>
-<div class="card">{table}</div>
-<div class="card" data-card>
-  <div class="grid">
-    <label>effective from<input data-field="effective_from" type="date" value="{today}"></label>
-    <label>source<select data-field="source">
-      <option value="watch-auto">watch-auto</option><option value="manual">manual</option>
-      <option value="lab">lab</option></select></label>
-    <label>Z1 max<input data-field="z1_max" type="number" value="134"></label>
-    <label>Z2 max<input data-field="z2_max" type="number" value="159"></label>
-    <label>Z3 max<input data-field="z3_max" type="number" value="169"></label>
-    <label>Z4 max<input data-field="z4_max" type="number" value="177"></label>
-  </div>
-  <input data-field="note" placeholder="why this changed — a watch recalculation, a lab test…">
-  <button data-action="set_zone_model" data-reload="1">Record model</button>
-  <span data-status></span>
+<div class="card">
+  <p>{bands}</p>
+  <p class="note">{_esc(model["note"])}</p>
 </div>"""
 
 
@@ -165,7 +139,7 @@ def render(context: dict, sessions: list[dict], start: date, end: date) -> str:
         "<h1>health</h1>"
         + coverage_line(context["coverage"])
         + window_nav(start, end, context["record"])
-        + zone_models_section(context["zone_models"])
+        + zone_bands_section(context["zone_model"])
         + period_notes_section(context["period_notes"])
         + sessions_section(sessions)
         + "<footer>Everything on this page is what no sensor recorded.</footer>"

@@ -26,30 +26,19 @@ from .store import Store
 BUCKETS = {"day": "day", "week": "week", "month": "month"}
 
 
-def _zone_basis(store: Store, when: date) -> dict:
-    """The zone model in force on `when`, and where it came from.
+def _zone_basis() -> dict:
+    """The zone model every figure in this module is computed with.
 
-    Falls back to the constant in `derive.zones` when nothing is recorded, and
-    says so: silently using a default while presenting it as the athlete's own
-    model is the same failure as an unstated coverage boundary.
+    One fixed model, defined in `derive.zones`. Reported rather than assumed,
+    so a caller reading "Z3 4:52" can see which bands produced it — the number
+    is meaningless without them.
     """
-    model = store.zone_model_at(when)
-    if model is None:
-        return {
-            "source": "default",
-            "note": "No dated model recorded for this date; using the built-in "
-                    "bands. Record one in hr_zone_models to classify by what the "
-                    "watch actually showed at the time.",
-            "boundaries": {label: f"{lo}-{hi}" for label, lo, hi in ZONES},
-        }
     return {
-        "source": model.source,
-        "effective_from": model.effective_from.isoformat(),
-        "boundaries": {
-            "z1": f"<={model.z1_max}", "z2": f"{model.z1_max + 1}-{model.z2_max}",
-            "z3": f"{model.z2_max + 1}-{model.z3_max}",
-            "z4": f"{model.z3_max + 1}-{model.z4_max}", "z5": f">{model.z4_max}",
-        },
+        "source": "fixed",
+        "note": "One model for the whole record, defined in derive/zones.py. "
+                "HealthKit cannot report what the watch was set to, so if the "
+                "bands change these become wrong for sessions before the change.",
+        "boundaries": {label: f"{lo}-{hi}" for label, lo, hi in ZONES},
     }
 
 
@@ -65,15 +54,12 @@ def _coverage(store: Store, through: date | None, tz: tzinfo | None) -> dict:
 
 
 def context(store: Store, tz: tzinfo | None = None) -> dict:
-    """Orient: how far the record extends, what zone models exist, what notes apply.
+    """Orient: how far the record extends, which zone bands apply, what notes apply.
 
     Worth calling before drawing any conclusion from the others — it is the one
     place that says outright what is *not* known.
     """
     with store.cursor() as cur:
-        cur.execute("SELECT effective_from, source, z1_max, z2_max, z3_max, z4_max,"
-                    " note FROM hr_zone_models ORDER BY effective_from")
-        models = [dict(r) for r in cur.fetchall()]
         cur.execute("SELECT starts_on, ends_on, note FROM period_notes"
                     " ORDER BY starts_on DESC LIMIT 50")
         notes = [{"from": r["starts_on"].isoformat(),
@@ -89,15 +75,7 @@ def context(store: Store, tz: tzinfo | None = None) -> dict:
             "earliest": span["lo"].isoformat() if span["lo"] else None,
             "latest": span["hi"].isoformat() if span["hi"] else None,
         },
-        "zone_models": [
-            {"effective_from": m["effective_from"].isoformat(), "source": m["source"],
-             "boundaries": {"z1": f"<={m['z1_max']}", "z2": f"{m['z1_max']+1}-{m['z2_max']}",
-                            "z3": f"{m['z2_max']+1}-{m['z3_max']}",
-                            "z4": f"{m['z3_max']+1}-{m['z4_max']}", "z5": f">{m['z4_max']}"},
-             "note": m["note"]}
-            for m in models
-        ] or [{"source": "default",
-               "note": "None recorded — zone numbers use the built-in bands."}],
+        "zone_model": _zone_basis(),
         "period_notes": notes,
     }
 
@@ -179,7 +157,7 @@ def session_detail(store: Store, workout_id: int, tz: tzinfo | None = None) -> d
 
     return {
         "coverage": _coverage(store, day, tz),
-        "zone_model": _zone_basis(store, day),
+        "zone_model": _zone_basis(),
         "session": {
             "id": w["id"], "date": day.isoformat(),
             "started_at": w["started_at"].isoformat(), "tz": w["tz_name"],

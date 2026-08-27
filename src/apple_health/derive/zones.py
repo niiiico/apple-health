@@ -6,15 +6,19 @@ constant in the race tool, as a SQL `CASE` in the HTML report, and again as
 one site, and this is it. The Swift copy remains, deliberately, because it runs
 on-device; the parity check is what keeps the two honest.
 
-Zone distributions are computed here and never stored. Boundaries are defined on
-the watch and change over time, so a persisted percentage is only valid for the
-model that produced it — see `store.hr_zone_models` and
-`docs/adr-006-sinks-are-plugins.md`.
+Zone distributions are computed here and never stored, because a stored
+percentage is only valid for the model that produced it.
 
-The literal below is the interim model: it predates dated models and applies to
-the whole record. Once `hr_zone_models` is populated, callers resolve boundaries
-through `Store.zone_model_at()` and this constant becomes the fallback for
-periods with no recorded model.
+**`ZONES` is the model.** One set of bands for the whole record. HealthKit
+cannot report what the watch was configured with — there is no read-back API —
+so this constant is not a default standing in for something better; it is the
+only statement of the bands that exists.
+
+The cost, stated plainly: if the boundaries on the watch ever change, every
+figure computed here becomes wrong for sessions before the change, with nothing
+to signal it. `hr_zone_models` exists in the schema for that day and is
+deliberately unread until then — reporting one set of bands while computing with
+another would be worse than having one set. See `docs/adr-006-sinks-are-plugins.md`.
 """
 
 from __future__ import annotations

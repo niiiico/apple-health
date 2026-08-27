@@ -175,9 +175,15 @@ _MIGRATIONS: tuple[str, ...] = (
         metric_days      int
     );
     """,
-    # 5 — dated zone models. HealthKit exposes zones only for live workout
-    # building, so these are recorded by hand. Each runs until the next one
-    # supersedes it; z5 is open-ended.
+    # 5 — dated zone models. Created, and deliberately unused: nothing reads or
+    # writes this table today. The zone model is the fixed one in derive/zones.py
+    # (ADR-006 (c)), because the boundaries have not changed and machinery for a
+    # change that has not happened is machinery that can be wrong.
+    #
+    # It survives as an empty table rather than being dropped because migrations
+    # are history. Do NOT start writing rows here without first making
+    # `derive.zones` classify by them: reporting one set of bands while
+    # computing with another is worse than having one set.
     """
     CREATE TABLE hr_zone_models (
         id             bigserial PRIMARY KEY,
@@ -234,33 +240,6 @@ class Coverage:
     observed_through: datetime | None
     requested_through: date | None = None
     warning: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ZoneModel:
-    """HR zone boundaries in effect from a given date.
-
-    Attributes:
-        effective_from: First day this model applies; it runs until superseded.
-        source: How the boundaries were obtained — 'watch-auto', 'manual', 'lab'.
-        z1_max, z2_max, z3_max, z4_max: Upper bounds in bpm. Z5 is open-ended.
-    """
-
-    effective_from: date
-    source: str
-    z1_max: int
-    z2_max: int
-    z3_max: int
-    z4_max: int
-
-    def zone_of(self, bpm: float) -> int:
-        """Return the zone number (1-5) this heart rate falls in."""
-        for zone, upper in enumerate(
-            (self.z1_max, self.z2_max, self.z3_max, self.z4_max), start=1
-        ):
-            if bpm <= upper:
-                return zone
-        return 5
 
 
 def assess_coverage(
@@ -424,27 +403,6 @@ class Store:
             observed = cursor.fetchone()["t"]
 
         return assess_coverage(observed, requested_through, tz)
-
-    def zone_model_at(self, when: date) -> ZoneModel | None:
-        """The zone model in effect on `when`, or None if none was recorded.
-
-        Defaulting to the model of the day — rather than the current one — is
-        what keeps a zone edit from reading as a change in fitness. Callers
-        comparing across periods should pin one model instead.
-        """
-        with self._connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT effective_from, source, z1_max, z2_max, z3_max, z4_max
-                  FROM hr_zone_models
-                 WHERE effective_from <= %s
-              ORDER BY effective_from DESC
-                 LIMIT 1
-                """,
-                (when,),
-            )
-            row = cursor.fetchone()
-        return ZoneModel(**row) if row else None
 
     def __enter__(self) -> Store:
         """Enter the context manager."""

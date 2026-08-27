@@ -139,9 +139,14 @@ path, unlike the web certificates. `ca.py list` shows expiry with a Type column.
 When it is reissued, both holders need the new copy: reseal for the pod
 (`./seal-secrets.sh`) and re-copy into `~/.config/apple-health/` for the Mac.
 
-### The server-side rule
+### Optionally, require it server-side
 
-The last step, which requires root on ras12. In
+Deliberately **not** done. The server accepts the certificate but does not demand
+one, which is a deliberate stopping point rather than unfinished work: it keeps
+mutual TLS from becoming a single point of failure for a connection that is
+already verified and password-authenticated.
+
+If you ever do want it, the rule requires root on ras12. In
 `/etc/postgresql/17/main/pg_hba.conf`, **above** the catch-all
 `host all all 172.16.0.0/16 scram-sha-256` — the first matching rule wins:
 
@@ -152,6 +157,11 @@ hostssl apple_health  apple_health  172.16.0.0/16  scram-sha-256  clientcert=ver
 Then `sudo systemctl reload postgresql@17-main`. The reload does not drop
 existing connections, so a connection opened before it proves nothing — verify
 with a fresh one.
+
+**Before doing that, check every holder.** The rule applies to anything
+connecting as `apple_health`, including the Mac, which is what runs ingest. Both
+holders present the certificate today; a third that did not would stop working,
+and for `ah-pgsync` that means Postgres silently falling behind SQLite.
 
 Requiring both a certificate and a password is deliberate: a stolen certificate
 alone is then not enough, and neither is a stolen password.

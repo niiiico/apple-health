@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta, timezone
 
 from apple_health.derive.zones import zone_of
-from apple_health.store import ZoneModel, assess_coverage
+from apple_health.store import assess_coverage
 
 JST = timezone(timedelta(hours=9))
 PDT = timezone(timedelta(hours=-7))
@@ -64,11 +64,6 @@ def test_evening_sync_does_not_claim_a_day_it_only_half_saw():
     cov = assess_coverage(observed, date(2026, 8, 25), PDT)
     assert cov.warning is not None
     assert "UNKNOWN, not absent" in cov.warning
-
-
-def test_zone_model_classifies_across_every_band():
-    zm = ZoneModel(date(2026, 1, 15), "watch-auto", 134, 159, 169, 177)
-    assert [zm.zone_of(b) for b in (100, 134, 135, 165, 174, 178, 200)] == [1, 1, 2, 3, 4, 5, 5]
 
 
 def test_an_implausible_rate_is_not_classified_as_recovery():

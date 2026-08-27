@@ -1,4 +1,4 @@
-"""The interaction layer: one page, three write actions, two probes.
+"""The interaction layer: one page, two write actions, three probes.
 
 ADR-006 corollary (g). This is where the facts no sensor produces get recorded —
 the zone model the watch was actually using, why a week went quiet, what a
@@ -51,36 +51,6 @@ def _as_date(value: Any, field: str) -> date:
         raise ValueError(f"{field} must be an ISO date, got {value!r}") from None
 
 
-def set_zone_model(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
-    """Record the HR zone model in force from a date.
-
-    Bands must ascend: an out-of-order model would silently misclassify every
-    session it covers, and there is no later signal that it did.
-    """
-    effective_from = _as_date(payload.get("effective_from"), "effective_from")
-    try:
-        maxes = [int(payload[f"z{i}_max"]) for i in range(1, 5)]
-    except (KeyError, TypeError, ValueError):
-        raise ValueError("z1_max…z4_max are required and must be whole numbers") from None
-    if not all(a < b for a, b in zip(maxes, maxes[1:])):
-        raise ValueError(f"zone bounds must ascend, got {maxes}")
-
-    with store.cursor() as cur:
-        cur.execute(
-            """INSERT INTO hr_zone_models (effective_from, source, z1_max, z2_max,
-                   z3_max, z4_max, note)
-               VALUES (%s,%s,%s,%s,%s,%s,%s)
-               ON CONFLICT (effective_from) DO UPDATE SET
-                   source = excluded.source, z1_max = excluded.z1_max,
-                   z2_max = excluded.z2_max, z3_max = excluded.z3_max,
-                   z4_max = excluded.z4_max, note = excluded.note""",
-            (effective_from, payload.get("source") or "manual", *maxes,
-             payload.get("note")),
-        )
-    store.commit()
-    return {"message": f"zone model recorded from {effective_from.isoformat()}"}
-
-
 def set_session_note(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
     """Attach (or clear) the note on one session."""
     try:
@@ -131,7 +101,6 @@ def set_period_note(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 ACTIONS: dict[str, Callable[[Store, dict[str, Any]], dict[str, Any]]] = {
-    "set_zone_model": set_zone_model,
     "set_session_note": set_session_note,
     "set_period_note": set_period_note,
 }

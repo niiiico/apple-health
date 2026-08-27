@@ -7,9 +7,12 @@ rows for the same reason. This file is the payoff for that split.
 
 from __future__ import annotations
 
+import html
+
 import pytest
 
-from apple_health import ui, web
+from apple_health import queries, ui, web
+from apple_health.derive.zones import ZONES, zone_of
 
 
 class _Cur:
@@ -44,35 +47,29 @@ class _Store:
         self.committed = True
 
 
-# --- zone models -------------------------------------------------------------
+# --- zone bands --------------------------------------------------------------
+# There is one zone model, the constant in derive.zones, and no way to record
+# another. The dated-model machinery was removed because it reported bands it
+# did not classify with; these tests exist so that cannot come back unnoticed.
 
-def test_zone_bands_must_ascend():
-    # An out-of-order model misclassifies every session it covers, and nothing
-    # downstream ever signals that it did.
-    with pytest.raises(ValueError, match="ascend"):
-        web.set_zone_model(_Store(), {"effective_from": "2026-01-15", "z1_max": 170,
-                                      "z2_max": 159, "z3_max": 169, "z4_max": 177})
+def test_the_reported_bands_are_the_ones_used_to_classify():
+    """The invariant the removed machinery broke.
+
+    `_zone_basis` states the bands a caller should read the numbers against. If
+    a band says 160-169 while `zone_of(165)` answers something other than that
+    band's label, every zone figure is being reported against a model that did
+    not produce it — which is exactly what happened when a recorded model was
+    displayed but never reached the arithmetic.
+    """
+    for label, span in queries._zone_basis()["boundaries"].items():
+        lo, hi = span.split("-")
+        probe = float(lo) + 1 if hi == "inf" else (float(lo) + float(hi)) / 2
+        assert zone_of(probe) == label, f"{probe} bpm is reported as {label}"
 
 
-def test_zone_model_needs_a_parseable_date():
-    with pytest.raises(ValueError, match="ISO date"):
-        web.set_zone_model(_Store(), {"effective_from": "nope", "z1_max": 1,
-                                      "z2_max": 2, "z3_max": 3, "z4_max": 4})
-
-
-def test_zone_model_needs_all_four_bounds():
-    with pytest.raises(ValueError, match="z1_max"):
-        web.set_zone_model(_Store(), {"effective_from": "2026-01-15", "z1_max": 134})
-
-
-def test_a_valid_zone_model_is_written_and_committed():
-    store = _Store()
-    msg = web.set_zone_model(store, {"effective_from": "2026-01-15", "source": "lab",
-                                     "z1_max": 134, "z2_max": 159, "z3_max": 169,
-                                     "z4_max": 177, "note": "ramp test"})
-    assert "2026-01-15" in msg["message"] and store.committed
-    sql, params = store.cur.executed[0]
-    assert "hr_zone_models" in sql and params[1] == "lab"
+def test_there_is_no_way_to_record_a_zone_model():
+    """Recording one would re-open the divergence, since nothing classifies by it."""
+    assert "set_zone_model" not in web.ACTIONS
 
 
 # --- period notes ------------------------------------------------------------
@@ -119,10 +116,12 @@ def test_an_empty_record_says_so_rather_than_rendering_a_blank():
     assert "empty" in ui.coverage_line({"observed_through": None})
 
 
-def test_an_empty_zone_timeline_is_called_out():
-    # Silence here would let every zone figure in the system quietly use the
-    # built-in bands while looking recorded.
-    assert "built-in bands" in ui.zone_models_section([{"source": "default"}])
+def test_the_page_states_the_bands_it_computed_with():
+    """"Z3 4:52" means nothing without them."""
+    page = ui.zone_bands_section(queries._zone_basis())
+    for label, _lo, _hi in ZONES:
+        # Escaped, because "Z1 <135" carries a < that must not reach the DOM raw.
+        assert html.escape(label) in page
 
 
 def test_notes_are_escaped_into_the_page():
