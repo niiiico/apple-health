@@ -138,12 +138,28 @@ TOOLS_DOC = """You have exactly one tool: the `ah-query` command, via Bash. It p
       on it. They may have been wrong.
 
   ah-query doc [--slug SLUG]
-      The athlete's own written material — the race plan with its phases, week
-      templates and per-leg targets, and the training log they keep by hand.
-      With no argument, lists what exists. This is what they DECIDED, as opposed
-      to everything above, which is what a sensor RECORDED. Where the two
-      disagree, that disagreement is usually the most interesting thing you can
-      report; do not quietly prefer one."""
+      The athlete's own written material. With no argument, lists what exists.
+      Two kinds, and they carry different authority:
+
+      * The race PLAN (`kujukuri-2026-plan`) is what was DECIDED — phases, week
+        templates, per-leg targets, fixed rest days. Authoritative for intent.
+        It cannot tell you what actually happened; only the record can.
+
+      * The LOG (`kujukuri-2026-log`) is a PREVIOUS ANALYSIS of the same record,
+        written by hand from a partial view of it. Its factual claims are claims,
+        not observations. Anything in it you can re-derive, re-derive — you have
+        the complete record and it did not.
+
+      That is not caution for its own sake. The log itself records that a week
+      was written up as "vélo = 0" when a 48.5 km ride had happened, because the
+      snapshot behind it stopped two days early. It also notes that sessions
+      under its capture thresholds (swim <2 km, run <10 km, ride <30 km) were
+      sometimes known only by conversation. Your queries have no such floor and
+      no such boundary, so where the log and the record disagree the record
+      usually wins — and saying so is one of the more useful things you can do.
+
+      Both remain worth reading: the plan is the only source for intent, and the
+      log is the only source for why a week went the way it did."""
 
 
 SYSTEM = """You are advising one endurance athlete on their own training, reading \
@@ -194,6 +210,9 @@ already wrote about recent sessions. Then write the review.
 Check the plan (`ah-query doc`) for what this session was *supposed* to be. A \
 session that matched the plan and a session that replaced it are different \
 things to report, and only the plan can tell you which happened.
+
+Judge the session from the record, not from what the log concluded about that \
+week. If the log made a claim you can check, check it.
 
 Length should match what happened. An easy half-hour walk deserves one sentence. \
 A hard interval session or a long ride deserves a short paragraph. Do not pad a \

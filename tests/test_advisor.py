@@ -260,3 +260,16 @@ def test_the_task_names_the_command_to_run():
     assert "Write in French" in task
     # The plan is what was decided; the sessions are what happened. Both.
     assert "ah-query doc" in task
+
+
+def test_the_prompt_separates_what_was_decided_from_what_was_concluded():
+    """The log is a previous analysis, not evidence.
+
+    Its conclusions were drawn from a partial view — it records its own
+    "vélo = 0" error — so feeding it uncritically would import the mistakes of
+    the process this replaces.
+    """
+    task = advisor.REVIEW_TASK.format(workout_id=1)
+    assert "DECIDED" in task and "PREVIOUS ANALYSIS" in task
+    assert "re-derive" in task
+    assert "vélo = 0" in task
