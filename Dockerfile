@@ -30,6 +30,7 @@ COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --extra pg --no-install-project
 
 COPY src/ ./src/
+COPY data/races/ ./data/races/
 # --no-editable: the default installs a link back to /app/src, which the
 # runtime stage does not carry, so the console scripts would find no package.
 RUN uv sync --frozen --no-dev --extra pg --no-editable
@@ -41,12 +42,23 @@ FROM python:3.12-slim
 RUN useradd --create-home --uid 10001 health
 
 COPY --from=build /opt/venv /opt/venv
+# AH_REPO: config.repo_root() otherwise derives from the source-tree layout,
+# which under a non-editable install lands in site-packages. Its docstring says
+# a container should set this; without it race_detail finds no archive and the
+# advisor is blind to every race.
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    AH_REPO=/app
+
+# The race archive. File-backed by ADR-001 and deliberately outside the
+# database, so `queries.race_detail` reads it from disk — without this the
+# advisor is blind to every race it should be reasoning from. 12K of markdown.
+# `repo_root()` walks up from the package, so this must sit beside it.
+COPY --from=build /app/data/races /app/data/races
 
 USER health
-WORKDIR /home/health
+WORKDIR /app
 
 # No ENTRYPOINT: this package publishes several console scripts rather than one
 # binary with subcommands, so the workload names the one it wants.

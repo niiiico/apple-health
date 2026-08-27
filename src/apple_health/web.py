@@ -63,11 +63,10 @@ def set_goal(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
     if not goal:
         raise ValueError("goal text is required")
     target = payload.get("target_date") or None
+    # A past target_date is accepted: a goal whose date has gone is a real
+    # state, and the advisor should say the race has been run rather than be
+    # prevented from ever seeing it.
     target_date = _as_date(target, "target_date") if target else None
-    if target_date and target_date < date.today():
-        # Not refused — a goal whose date has passed is a real state, and the
-        # advisor should say the race has been run rather than plan towards it.
-        pass
 
     with store.cursor() as cur:
         cur.execute(
