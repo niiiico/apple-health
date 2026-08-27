@@ -22,6 +22,8 @@ Usage::
     ah-query session --id 5561
     ah-query metric --metric RestingHeartRate --start 2026-06-01 --end 2026-08-27
     ah-query race [--race 2025-09-27-triathlon-olympique]
+    ah-query reviews --start 2026-08-01 --end 2026-08-27
+    ah-query doc [--slug kujukuri-2026]
 """
 
 from __future__ import annotations
@@ -80,6 +82,13 @@ def main(argv: list[str] | None = None) -> int:
     r = sub.add_parser("race", help="archived race breakdowns")
     r.add_argument("--race", default=None)
 
+    v = sub.add_parser("reviews", help="reviews already written for a window")
+    v.add_argument("--start", type=date.fromisoformat, required=True)
+    v.add_argument("--end", type=date.fromisoformat, required=True)
+
+    doc = sub.add_parser("doc", help="reference documents; no argument lists them")
+    doc.add_argument("--slug", default=None)
+
     args = ap.parse_args(argv)
 
     # race_detail reads files, not the database, so it needs no connection —
@@ -103,6 +112,13 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "session":
             _record("session", {"id": args.id})
             out = queries.session_detail(store, args.id)
+        elif args.command == "reviews":
+            payload = {"start": args.start.isoformat(), "end": args.end.isoformat()}
+            _record("reviews", payload)
+            out = queries.reviews(store, args.start, args.end)
+        elif args.command == "doc":
+            _record("doc", {"slug": args.slug})
+            out = queries.document(store, args.slug)
         else:
             payload = {"metric": args.metric, "start": args.start.isoformat(),
                        "end": args.end.isoformat(), "bucket": args.bucket}

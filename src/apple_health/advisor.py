@@ -129,7 +129,21 @@ TOOLS_DOC = """You have exactly one tool: the `ah-query` command, via Bash. It p
 
   ah-query race [--race SLUG]
       Archived per-leg race breakdowns. With no argument, lists what exists.
-      The only place official splits and placings live."""
+      The only place official splits and placings live.
+
+  ah-query reviews --start YYYY-MM-DD --end YYYY-MM-DD
+      Reviews already written for sessions in that window, so you do not repeat
+      last week's point as though it were new. These are prior *opinions*, not
+      observations: anything factual in them must be re-queried before you rely
+      on it. They may have been wrong.
+
+  ah-query doc [--slug SLUG]
+      The athlete's own written material — the race plan with its phases, week
+      templates and per-leg targets, and the training log they keep by hand.
+      With no argument, lists what exists. This is what they DECIDED, as opposed
+      to everything above, which is what a sensor RECORDED. Where the two
+      disagree, that disagreement is usually the most interesting thing you can
+      report; do not quietly prefer one."""
 
 
 SYSTEM = """You are advising one endurance athlete on their own training, reading \
@@ -161,14 +175,25 @@ they look wrong for this athlete, say so rather than silently reinterpreting the
 
 5. If the data does not support a conclusion, say that. "The record does not show \
 enough to tell" is a useful answer here and a wrong answer is not. You are not \
-being scored on having an opinion."""
+being scored on having an opinion.
+
+6. **Write in French.** The athlete is French, their goals, race plan and \
+training log are in French, and what you write sits alongside them. Use the \
+vocabulary those documents already use — natation, vélo, course, brick, seuil, \
+allure, FC, dérive, affûtage — rather than translating it. Zone labels (Z1…Z5) \
+and metric names stay as the tools report them."""
 
 REVIEW_TASK = SYSTEM + "\n\n" + TOOLS_DOC + """
 
 Review this single session: workout id {workout_id}.
 
 Run `ah-query session --id {workout_id}`, and whatever else you need to judge it \
-— the sessions around it, a metric trend, a past race. Then write the review.
+— the sessions around it, a metric trend, a past race, the race plan, what you \
+already wrote about recent sessions. Then write the review.
+
+Check the plan (`ah-query doc`) for what this session was *supposed* to be. A \
+session that matched the plan and a session that replaced it are different \
+things to report, and only the plan can tell you which happened.
 
 Length should match what happened. An easy half-hour walk deserves one sentence. \
 A hard interval session or a long ride deserves a short paragraph. Do not pad a \
@@ -190,16 +215,21 @@ goals; if none are recorded, say plainly that no goal is recorded and that the \
 plan is therefore a description of current training rather than a plan towards \
 anything — do not invent an objective.
 
-Look at recent training with `ah-query sessions`, at whatever trends matter with \
-`ah-query metric`, and at past races with `ah-query race` where a goal points at one.
+Read the race plan and the training log with `ah-query doc` — they carry the \
+phase structure, the week templates and the per-leg targets, and the plan you \
+write continues them rather than starting over. Look at recent training with \
+`ah-query sessions`, at what you already concluded with `ah-query reviews`, at \
+whatever trends matter with `ah-query metric`, and at past races with \
+`ah-query race`.
 
 Write in markdown, and keep it to something readable on a phone before a race. \
 Suggested shape, to vary as the situation deserves:
 
-- **Where you are** — an honest read of current training, including what the \
-record cannot tell you.
-- **The next few weeks** — what to do, concretely enough to act on.
-- **Watch for** — anything in the data that warrants attention.
+- **Où tu en es** — an honest read of current training against the phase the \
+plan says you are in, including what the record cannot tell you.
+- **Les prochaines semaines** — what to do, concretely enough to act on, \
+respecting the fixed constraints in the plan (rest days, session structure).
+- **À surveiller** — anything in the data that warrants attention.
 
 This document is rewritten in full each time, so it should read as current on its \
 own, without reference to previous versions."""

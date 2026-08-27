@@ -275,3 +275,66 @@ def race_detail(race: str | None = None) -> dict:
     if not path.exists():
         return {"error": f"no archive for {race!r}", "races": available}
     return {"race": race, "content": path.read_text()}
+
+
+def reviews(store: Store, start: date, end: date) -> dict:
+    """Reviews already written for sessions in a window.
+
+    For continuity — so a review does not repeat last week's point as though it
+    were new, and so the plan can be built from what was observed rather than
+    re-derived.
+
+    **These are prior opinions, not data.** The caller is told so, because a
+    conclusion restated often enough starts to read as an established fact, and
+    the underlying record is one query away.
+    """
+    with store.cursor() as cur:
+        cur.execute(
+            """SELECT w.id, w.activity, w.started_at, r.review, r.created_at,
+                      r.basis->>'observed_through' AS observed_through
+                 FROM session_reviews r
+                 JOIN workouts w ON w.id = r.workout_id
+                WHERE w.started_at >= %s AND w.started_at < %s
+             ORDER BY w.started_at DESC""",
+            (start, end + timedelta(days=1)))
+        rows = cur.fetchall()
+    return {
+        "caveat": "These are opinions previously written, not observations. "
+                  "Anything factual in them should be re-queried before it is "
+                  "relied on; they may have been wrong, and the record may have "
+                  "grown since.",
+        "reviews": [
+            {"workout_id": r["id"], "activity": r["activity"],
+             "started_at": r["started_at"].isoformat(),
+             "written_at": r["created_at"].isoformat(),
+             "record_covered_through": r["observed_through"],
+             "review": r["review"]}
+            for r in rows
+        ],
+    }
+
+
+def document(store: Store, slug: str | None = None) -> dict:
+    """A reference document, or the list of them when called with no slug.
+
+    Where the athlete's own written material lives — a race plan, a training
+    block, anything decided rather than measured. Distinct from everything else
+    in this module, which reports what a sensor recorded.
+    """
+    with store.cursor() as cur:
+        if slug is None:
+            cur.execute("SELECT slug, volatility, updated_at FROM documents"
+                        " ORDER BY slug")
+            return {"documents": [
+                {"slug": r["slug"], "volatility": r["volatility"],
+                 "updated_at": r["updated_at"].isoformat()}
+                for r in cur.fetchall()]}
+        cur.execute("SELECT slug, body, volatility, updated_at FROM documents"
+                    " WHERE slug = %s", (slug,))
+        row = cur.fetchone()
+        if row is None:
+            cur.execute("SELECT slug FROM documents ORDER BY slug")
+            return {"error": f"no document {slug!r}",
+                    "documents": [r["slug"] for r in cur.fetchall()]}
+        return {"slug": row["slug"], "volatility": row["volatility"],
+                "updated_at": row["updated_at"].isoformat(), "body": row["body"]}

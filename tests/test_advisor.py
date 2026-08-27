@@ -257,3 +257,6 @@ def test_the_task_names_the_command_to_run():
     assert "ah-query session --id 42" in task
     assert "ah-query context" in task
     assert "Absence of data is never evidence of absence of training" in task
+    assert "Write in French" in task
+    # The plan is what was decided; the sessions are what happened. Both.
+    assert "ah-query doc" in task
