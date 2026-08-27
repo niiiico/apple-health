@@ -220,6 +220,40 @@ _MIGRATIONS: tuple[str, ...] = (
         updated_at timestamptz NOT NULL DEFAULT now()
     );
     """,
+    # 7 — what you are training for, and what the advisor made of each session.
+    #
+    # `goals.goal` is free text on purpose. A race, a return-to-load rule, a
+    # season's intent and "just stay consistent" are all goals, and an enum of
+    # kinds would be a branch in the code standing in for a sentence you can
+    # write. `target_date` is nullable because plenty of goals have no date.
+    #
+    # `session_reviews` is kept apart from `session_notes` deliberately: those
+    # are the athlete's words, these are a model's. Merging them would make the
+    # two indistinguishable a month later, which is the same provenance failure
+    # as reporting one zone model while computing with another.
+    #
+    # `basis` records what the review was actually written from — the coverage
+    # instant, the zone bands, the queries called. A review is an opinion about
+    # data; without the data it saw, it cannot be checked or re-run.
+    """
+    CREATE TABLE goals (
+        id          bigserial PRIMARY KEY,
+        goal        text NOT NULL,
+        target_date date,
+        created_at  timestamptz NOT NULL DEFAULT now(),
+        archived_at timestamptz
+    );
+
+    CREATE TABLE session_reviews (
+        workout_id bigint PRIMARY KEY REFERENCES workouts(id) ON DELETE CASCADE,
+        review     text NOT NULL,
+        model      text NOT NULL,
+        basis      jsonb NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now()
+    );
+
+    CREATE INDEX goals_active ON goals (archived_at) WHERE archived_at IS NULL;
+    """,
 )
 
 

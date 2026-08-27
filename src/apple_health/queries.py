@@ -54,7 +54,7 @@ def _coverage(store: Store, through: date | None, tz: tzinfo | None) -> dict:
 
 
 def context(store: Store, tz: tzinfo | None = None) -> dict:
-    """Orient: how far the record extends, which zone bands apply, what notes apply.
+    """Orient: how far the record extends, which bands apply, the notes, the goals.
 
     Worth calling before drawing any conclusion from the others — it is the one
     place that says outright what is *not* known.
@@ -67,6 +67,11 @@ def context(store: Store, tz: tzinfo | None = None) -> dict:
                   "note": r["note"]} for r in cur.fetchall()]
         cur.execute("SELECT min(started_at) lo, max(started_at) hi, count(*) n FROM workouts")
         span = cur.fetchone()
+        cur.execute("SELECT id, goal, target_date FROM goals WHERE archived_at IS NULL"
+                    " ORDER BY target_date NULLS LAST, created_at")
+        goals = [{"id": r["id"], "goal": r["goal"],
+                  "target_date": r["target_date"].isoformat() if r["target_date"] else None}
+                 for r in cur.fetchall()]
 
     return {
         "coverage": _coverage(store, None, tz),
@@ -77,6 +82,10 @@ def context(store: Store, tz: tzinfo | None = None) -> dict:
         },
         "zone_model": _zone_basis(),
         "period_notes": notes,
+        # In the athlete's own words. Empty means none recorded — which is not
+        # the same as "no goals", and advice given without one should say so
+        # rather than inventing a plausible objective to advise towards.
+        "goals": goals,
     }
 
 

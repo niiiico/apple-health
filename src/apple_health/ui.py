@@ -51,6 +51,36 @@ def zone_bands_section(model: dict) -> str:
 </div>"""
 
 
+def goals_section(goals: list[dict]) -> str:
+    """What you are training for, and the form to say so.
+
+    An empty list is called out rather than left blank: the advisor writes
+    towards these, and with none recorded it is commenting rather than coaching.
+    """
+    if goals:
+        rows = "".join(
+            f"<tr><td>{_esc(g['goal'])}</td>"
+            f"<td>{_esc(g['target_date'] or '—')}</td>"
+            f'<td><button data-action="archive_goal" data-reload="1"'
+            f" data-arg-id=\"{int(g['id'])}\">archive</button></td></tr>"
+            for g in goals)
+        table = ("<table><tr><th>goal</th><th>by</th><th></th></tr>"
+                 f"{rows}</table>")
+    else:
+        table = ('<p class="note warn">None recorded. The advisor has nothing to '
+                 "write towards, so it can describe your training but not judge "
+                 "it against anything.</p>")
+
+    return f"""<h2>Goals</h2>
+<div class="card">{table}</div>
+<div class="card" data-card>
+  <input data-field="goal" placeholder="what you are training for, in your words">
+  <label>target date (optional)<input data-field="target_date" type="date"></label>
+  <button data-action="set_goal" data-reload="1">Record goal</button>
+  <span data-status></span>
+</div>"""
+
+
 def period_notes_section(notes: list[dict]) -> str:
     """Spans of context no sensor records — a closed pool, a trip, an injury."""
     if notes:
@@ -139,6 +169,7 @@ def render(context: dict, sessions: list[dict], start: date, end: date) -> str:
         "<h1>health</h1>"
         + coverage_line(context["coverage"])
         + window_nav(start, end, context["record"])
+        + goals_section(context["goals"])
         + zone_bands_section(context["zone_model"])
         + period_notes_section(context["period_notes"])
         + sessions_section(sessions)

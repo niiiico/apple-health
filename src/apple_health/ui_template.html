@@ -70,12 +70,20 @@ async function post(action, payload, el) {
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("button[data-action]");
   if (!b) return;
+  // A button may stand alone (a row's "archive"), so there need not be a card.
   const card = b.closest("[data-card]");
   const payload = {};
-  card.querySelectorAll("[data-field]").forEach(i => {
+  if (card) card.querySelectorAll("[data-field]").forEach(i => {
     payload[i.dataset.field] = i.value === "" ? null : i.value;
   });
-  const ok = await post(b.dataset.action, payload, card.querySelector("[data-status]"));
+  // data-arg-* on the button itself, for actions whose whole payload is an id.
+  for (const [k, v] of Object.entries(b.dataset)) {
+    if (k.startsWith("arg")) payload[k.slice(3).toLowerCase()] = v;
+  }
+  const status = (card || b.parentElement).querySelector("[data-status]")
+              || b.insertAdjacentElement("afterend", Object.assign(
+                   document.createElement("span"), {className: "note"}));
+  const ok = await post(b.dataset.action, payload, status);
   if (ok && b.dataset.reload) setTimeout(() => location.reload(), 400);
 });
 </script>

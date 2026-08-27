@@ -1,4 +1,4 @@
-"""The interaction layer: one page, two write actions, three probes.
+"""The interaction layer: one page, four write actions, three probes.
 
 ADR-006 corollary (g). This is where the facts no sensor produces get recorded —
 the zone model the watch was actually using, why a week went quiet, what a
@@ -51,6 +51,53 @@ def _as_date(value: Any, field: str) -> date:
         raise ValueError(f"{field} must be an ISO date, got {value!r}") from None
 
 
+def set_goal(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
+    """Record what you are training for, in your own words.
+
+    Free text rather than a chosen kind: a race, a return-to-load rule and "stay
+    consistent through the winter" are all goals, and an enum would be a branch
+    in the code standing in for a sentence. `target_date` is optional because
+    plenty of goals have no date, and a required one would invite a fake.
+    """
+    goal = (payload.get("goal") or "").strip()
+    if not goal:
+        raise ValueError("goal text is required")
+    target = payload.get("target_date") or None
+    target_date = _as_date(target, "target_date") if target else None
+    if target_date and target_date < date.today():
+        # Not refused — a goal whose date has passed is a real state, and the
+        # advisor should say the race has been run rather than plan towards it.
+        pass
+
+    with store.cursor() as cur:
+        cur.execute(
+            "INSERT INTO goals (goal, target_date) VALUES (%s,%s) RETURNING id",
+            (goal, target_date))
+        goal_id = cur.fetchone()["id"]
+    store.commit()
+    when = f" by {target_date.isoformat()}" if target_date else ""
+    return {"message": f"goal #{goal_id} recorded{when}"}
+
+
+def archive_goal(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
+    """Retire a goal without deleting it.
+
+    Archived rather than removed: a plan written towards a goal is only
+    intelligible if the goal it was written towards still exists.
+    """
+    try:
+        goal_id = int(payload.get("id"))
+    except (TypeError, ValueError):
+        raise ValueError("id is required and must be a whole number") from None
+    with store.cursor() as cur:
+        cur.execute("UPDATE goals SET archived_at = now()"
+                    " WHERE id = %s AND archived_at IS NULL", (goal_id,))
+        if cur.rowcount == 0:
+            raise ValueError(f"no active goal #{goal_id}")
+    store.commit()
+    return {"message": f"goal #{goal_id} archived"}
+
+
 def set_session_note(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
     """Attach (or clear) the note on one session."""
     try:
@@ -101,6 +148,8 @@ def set_period_note(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 ACTIONS: dict[str, Callable[[Store, dict[str, Any]], dict[str, Any]]] = {
+    "set_goal": set_goal,
+    "archive_goal": archive_goal,
     "set_session_note": set_session_note,
     "set_period_note": set_period_note,
 }

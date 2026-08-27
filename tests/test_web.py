@@ -8,6 +8,7 @@ rows for the same reason. This file is the payoff for that split.
 from __future__ import annotations
 
 import html
+from datetime import date
 
 import pytest
 
@@ -21,6 +22,9 @@ class _Cur:
     def __init__(self, answers=None):
         self.answers = list(answers or [])
         self.executed = []
+        # Real cursors expose rowcount; actions that check it to detect "no such
+        # row" need a default, and 1 (a row was touched) is the benign one.
+        self.rowcount = 1
 
     def execute(self, sql, params=None):
         self.executed.append((" ".join(sql.split()), params))
@@ -70,6 +74,55 @@ def test_the_reported_bands_are_the_ones_used_to_classify():
 def test_there_is_no_way_to_record_a_zone_model():
     """Recording one would re-open the divergence, since nothing classifies by it."""
     assert "set_zone_model" not in web.ACTIONS
+
+
+# --- goals -------------------------------------------------------------------
+
+def test_a_goal_needs_words():
+    with pytest.raises(ValueError, match="required"):
+        web.set_goal(_Store(), {"goal": "   ", "target_date": "2026-10-04"})
+
+
+def test_a_goal_needs_no_date():
+    """Plenty of goals have no date, and requiring one would invite a fake."""
+    store = _Store([{"id": 3}])
+    msg = web.set_goal(store, {"goal": "stay in remission, keep load even"})
+    assert "#3" in msg["message"] and store.committed
+    sql, params = store.cur.executed[0]
+    assert "INSERT INTO goals" in sql and params[1] is None
+
+
+def test_a_goal_records_its_date_when_given():
+    store = _Store([{"id": 4}])
+    msg = web.set_goal(store, {"goal": "sub-1:50 half", "target_date": "2026-11-15"})
+    assert "2026-11-15" in msg["message"]
+    assert store.cur.executed[0][1][1] == date(2026, 11, 15)
+
+
+def test_a_goal_with_an_unparseable_date_is_refused():
+    with pytest.raises(ValueError, match="ISO date"):
+        web.set_goal(_Store(), {"goal": "sub-1:50 half", "target_date": "novemberish"})
+
+
+def test_archiving_an_unknown_goal_is_refused():
+    """Silently succeeding would report a goal retired that is still driving plans."""
+    store = _Store()
+    store.cur.rowcount = 0
+    with pytest.raises(ValueError, match="no active goal"):
+        web.archive_goal(store, {"id": 99})
+
+
+def test_archiving_keeps_the_row():
+    """A plan written towards a goal is unintelligible if the goal is deleted."""
+    store = _Store()
+    store.cur.rowcount = 1
+    web.archive_goal(store, {"id": 7})
+    sql, _ = store.cur.executed[0]
+    assert "UPDATE goals SET archived_at" in sql and "DELETE" not in sql
+
+
+def test_no_goals_is_called_out_rather_than_left_blank():
+    assert "nothing to write towards" in ui.goals_section([])
 
 
 # --- period notes ------------------------------------------------------------
