@@ -72,9 +72,10 @@ def credential() -> dict[str, str]:
 
     - ``sk-ant-api…`` — an API key, sent as ``x-api-key``. Billed per token.
     - ``sk-ant-oat…`` — a Claude Code OAuth token, sent as ``Authorization:
-      Bearer``. Drawn against a *subscription*, so it shares its limits with
-      every interactive Claude session on the same account — a long review run
-      and a person working can rate-limit each other.
+      Bearer``. **This will authenticate and then be refused**: such tokens are
+      not authorised for direct Messages API use, and the refusal arrives as a
+      429 with no rate-limit headers (see ``_explain``). Supported here only so
+      the failure can be named accurately.
 
     Passing an OAuth token as ``api_key`` returns 401 "API key is invalid",
     which reads like a bad secret rather than the wrong header, so the prefix
@@ -281,6 +282,34 @@ This document is rewritten in full each time, so it should read as current on it
 own, without reference to previous versions."""
 
 
+def _explain(exc: Exception, cred: dict[str, str]) -> str:
+    """Name the failure, distinguishing a real throttle from a refused credential.
+
+    A genuine rate limit carries ``retry-after`` and ``anthropic-ratelimit-*``
+    headers. The refusal of a Claude Code OAuth token carries neither, and its
+    message is the literal string "Error" — so it looks exactly like throttling
+    and invites the conclusion that the account is busy. It is not: the token is
+    simply not valid for this API, and waiting will never help.
+    """
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if status != 429:
+        return f"{type(exc).__name__}: {exc}"
+
+    headers = getattr(response, "headers", {}) or {}
+    throttled = any(k.lower() == "retry-after" or "ratelimit" in k.lower()
+                    for k in headers)
+    if throttled:
+        return f"rate limited (retry-after={headers.get('retry-after', '?')})"
+    if "auth_token" in cred:
+        return ("refused, not throttled: this is a Claude Code OAuth token "
+                "(sk-ant-oat…), which is not authorised for direct Messages API "
+                "use. The 429 carries no rate-limit headers, which is how you "
+                "tell. Waiting will not help — use an API key (sk-ant-api…).")
+    return ("429 with no rate-limit headers — refused rather than throttled. "
+            "Check the credential rather than waiting.")
+
+
 @dataclass
 class Run:
     """One completed conversation: the text produced, and what it looked at."""
@@ -440,17 +469,19 @@ def main(argv: list[str] | None = None) -> int:
     # A CronJob has nobody to retry it by hand, and a subscription token shares
     # its rate limit with interactive use, so 429s are expected rather than
     # exceptional. The SDK retries these with backoff.
-    client = anthropic.Anthropic(max_retries=6, timeout=600.0, **credential())
+    cred = credential()
+    client = anthropic.Anthropic(max_retries=6, timeout=600.0, **cred)
     store = Store(None)
     try:
         if args.command == "review":
-            return _review(client, store, args)
-        return _plan(client, store, args)
+            return _review(client, store, args, cred)
+        return _plan(client, store, args, cred)
     finally:
         store.close()
 
 
-def _review(client: Any, store: Store, args: argparse.Namespace) -> int:
+def _review(client: Any, store: Store, args: argparse.Namespace,
+            cred: dict[str, str]) -> int:
     rows, older = unreviewed(store, args.since, args.limit)
     if older:
         print(f"note: {older} unreviewed session(s) before {args.since} were not "
@@ -468,7 +499,7 @@ def _review(client: Any, store: Store, args: argparse.Namespace) -> int:
         except Exception as exc:                  # noqa: BLE001
             # One bad session must not abandon the rest; the review is simply
             # not stored, so the next run tries it again.
-            print(f"FAILED {label}: {exc}", file=sys.stderr)
+            print(f"FAILED {label}: {_explain(exc, cred)}", file=sys.stderr)
             failures += 1
             continue
         if args.dry_run:
@@ -479,9 +510,14 @@ def _review(client: Any, store: Store, args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
-def _plan(client: Any, store: Store, args: argparse.Namespace) -> int:
-    run = converse(client, store, PLAN_TASK.format(today=date.today().isoformat()),
-                   args.effort)
+def _plan(client: Any, store: Store, args: argparse.Namespace,
+          cred: dict[str, str]) -> int:
+    try:
+        run = converse(client, store, PLAN_TASK.format(today=date.today().isoformat()),
+                       args.effort)
+    except Exception as exc:                      # noqa: BLE001
+        print(f"FAILED: {_explain(exc, cred)}", file=sys.stderr)
+        return 1
     if args.dry_run:
         print(run.text)
         return 0

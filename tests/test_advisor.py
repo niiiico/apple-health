@@ -234,3 +234,36 @@ def test_a_missing_credential_says_where_to_put_one(monkeypatch):
     monkeypatch.setattr(advisor, "_KEY_FILE", advisor.Path("/nonexistent/key"))
     with pytest.raises(SystemExit, match="No credential"):
         advisor.credential()
+
+
+# --- telling a refusal from a throttle ---------------------------------------
+# Both arrive as 429. Reading one as the other cost a wrong diagnosis once:
+# "the account is busy, wait" when the credential was simply not valid for this
+# API and waiting would never have helped.
+
+class _Resp(SimpleNamespace):
+    pass
+
+
+def test_a_429_with_rate_limit_headers_is_a_real_throttle():
+    exc = SimpleNamespace(response=_Resp(
+        status_code=429, headers={"retry-after": "30",
+                                  "anthropic-ratelimit-requests-remaining": "0"}))
+    assert "rate limited" in advisor._explain(exc, {"api_key": "sk-ant-api03-x"})
+
+
+def test_a_429_without_them_on_an_oauth_token_is_named_a_refusal():
+    exc = SimpleNamespace(response=_Resp(status_code=429, headers={}))
+    msg = advisor._explain(exc, {"auth_token": "sk-ant-oat01-x"})
+    assert "not throttled" in msg
+    assert "Waiting will not help" in msg
+
+
+def test_a_429_without_them_on_an_api_key_still_says_refused():
+    exc = SimpleNamespace(response=_Resp(status_code=429, headers={}))
+    assert "refused rather than throttled" in advisor._explain(
+        exc, {"api_key": "sk-ant-api03-x"})
+
+
+def test_other_errors_are_reported_as_themselves():
+    assert "ValueError" in advisor._explain(ValueError("boom"), {"api_key": "x"})
