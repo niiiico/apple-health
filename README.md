@@ -138,7 +138,7 @@ The estate's server is `postgres.int.dev2.net` (ras12, PostgreSQL 17.6), where
 the dataset now lives:
 
 ```bash
-export APPLE_HEALTH_DSN='postgresql://apple_health@postgres.int.dev2.net:5432/apple_health?sslmode=require'
+export APPLE_HEALTH_DSN='postgresql://apple_health@postgres.int.dev2.net:5432/apple_health?sslmode=verify-full&sslrootcert=/Users/nicolas-local/.config/apple-health/ca.cert.pem&sslcert=/Users/nicolas-local/.config/apple-health/apple_health.crt&sslkey=/Users/nicolas-local/.config/apple-health/apple_health.key'
 
 uv run --extra pg ah-migrate --dry-run    # counts, then rolls back
 uv run --extra pg ah-migrate              # commits

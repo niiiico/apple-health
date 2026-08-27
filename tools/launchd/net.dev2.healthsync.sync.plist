@@ -24,7 +24,7 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>APPLE_HEALTH_DSN</key>
-        <string>postgresql://apple_health@postgres.int.dev2.net:5432/apple_health?sslmode=require</string>
+        <string>postgresql://apple_health@postgres.int.dev2.net:5432/apple_health?sslmode=verify-full&amp;sslrootcert=/Users/nicolas-local/.config/apple-health/ca.cert.pem&amp;sslcert=/Users/nicolas-local/.config/apple-health/apple_health.crt&amp;sslkey=/Users/nicolas-local/.config/apple-health/apple_health.key</string>
     </dict>
     <key>StartInterval</key>
     <integer>1800</integer>

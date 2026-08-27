@@ -154,25 +154,32 @@ heart-rate half moved. Claiming the parameter had gone would be the same kind of
 overstatement as "the zone model is defined once" was before the review caught
 it. Retiring it needs route points in the store, which nothing needs yet.
 
-### The database connection verifies the server; it is not yet mutual
+### The database connection is mutually authenticated
 
-The pod connects with `sslmode=verify-full`, which checks the certificate chain
-*and* that the hostname matches — so it proves which server answered. `require`
-and `verify-ca` encrypt without proving that. Do not downgrade to them to make
-something connect.
+`sslmode=verify-full` with a client certificate: we verify the server — chain
+and hostname, so it proves which server answered — and the server verifies us.
+`require` and `verify-ca` encrypt without proving the former; do not downgrade to
+them to make something connect.
 
 An earlier draft of this section said the connection was stuck on `require`
-until a client certificate could be issued. That was wrong, and worth recording
-because the error is an easy one to repeat: `verify-full` describes how *this*
-end verifies the *server*, and needs only the root CA, which was already mounted
-in the pod for oauth2-proxy. A client certificate is the other direction — the
-server verifying us — and the two were conflated.
+until a client certificate could be issued. That was wrong, and worth keeping
+because the error is easy to repeat: `verify-full` describes how *this* end
+verifies the *server* and needs only the root CA, which was already mounted for
+oauth2-proxy. A client certificate is the other direction. Conflating them made
+a change that needed nothing look like it needed a passphrase and a window.
 
-What remains is therefore genuine mutual TLS: today the server authenticates
-this connection by password alone, over a link we have verified. Adding a client
-certificate needs the Intermediate CA passphrase typed by hand, and it needs one
-naming decision, both spelled out in `deploy/k8s/README.md`. It is hardening on
-top of a connection that is already sound, not a gap papered over.
+Two things this turned up that were not obvious:
+
+- **The certificate is held by the pod *and* the Mac**, because Postgres matches
+  the CN against the role name — a second certificate for `apple_health` would
+  carry the same CN and be the same identity. So the `pg_hba` rule requiring a
+  certificate applies to the Mac as well, and the Mac is what runs ingest.
+  Applying it while the Mac still connected on `sslmode=require` would have
+  stopped `ah-pgsync` and left Postgres quietly behind SQLite — corollary (b)'s
+  failure exactly, arriving through the door marked "security hardening".
+- **It expires 2028-01-09 and does not auto-renew.** Client certificates have no
+  ACME path. This is a real maintenance obligation, and the honest cost of the
+  decision rather than a footnote.
 
 ## Consequences
 

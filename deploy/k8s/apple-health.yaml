@@ -33,12 +33,15 @@ data:
   # one. Only the root CA is needed for this: verifying the server is what
   # sslrootcert is for.
   #
-  # Not yet mutual: the server does not require a client certificate from us,
-  # so it authenticates this connection by password alone. That is a separate
-  # hardening step, described in deploy/k8s/README.md, and it needs the
-  # Intermediate CA passphrase typed by hand.
+  # Mutual: we verify the server (sslrootcert) and the server verifies us
+  # (sslcert/sslkey). The certificate's CN is apple_health, which must stay
+  # equal to the role name — Postgres matches them directly, so renaming the
+  # role means reissuing the certificate.
+  #
+  # It expires 2028-01-09 and does NOT auto-renew; there is no ACME path for
+  # client certificates. `ca.py list` shows expiry.
   APPLE_HEALTH_DSN: >-
-    postgresql://apple_health@postgres.int.dev2.net:5432/apple_health?sslmode=verify-full&sslrootcert=/etc/ssl/dev2/ca.cert.pem
+    postgresql://apple_health@postgres.int.dev2.net:5432/apple_health?sslmode=verify-full&sslrootcert=/etc/ssl/dev2/ca.cert.pem&sslcert=/etc/apple-health/certs/apple_health.crt&sslkey=/etc/apple-health/certs/apple_health.key
 ---
 # The single page at /, per-session detail at /session/<id>, and a write API
 # under /api/. The pod is NOT read-only: those endpoints record zone models and
@@ -142,6 +145,10 @@ spec:
             - name: ca
               mountPath: /etc/ssl/dev2
               readOnly: true
+            # The client certificate and its key, for the server to verify us.
+            - name: certs
+              mountPath: /etc/apple-health/certs
+              readOnly: true
 
         # Single sign-on. The application has no auth code and needs none: this
         # sidecar is the only thing the Service exposes, so every request has
@@ -221,6 +228,14 @@ spec:
               mountPath: /etc/ssl/dev2
               readOnly: true
       volumes:
+        # The Postgres client certificate and key. libpq refuses to use a key
+        # that is group- or world-readable, hence 0600 — which is also why this
+        # cannot be the same mount as the CA below: that one has to stay
+        # readable by oauth2-proxy, which is a different concern entirely.
+        - name: certs
+          secret:
+            secretName: apple-health-certs
+            defaultMode: 0600
         # The Dev2 root certificate, so oauth2-proxy can verify Authelia. A
         # ConfigMap rather than a Secret because a CA certificate is public by
         # construction — it is the thing you publish. When the Postgres client

@@ -99,54 +99,59 @@ curl -s http://172.16.22.27:30890/healthz   # coverage instant, no session neede
 A 302 carrying `client_id=apple-health` is the gate working. If it lands on
 `error=invalid_client`, Authelia has not been told about the client yet.
 
-## The database connection: verified, not yet mutual
+## The database connection: mutual TLS
 
-`APPLE_HEALTH_DSN` uses `sslmode=verify-full` with `sslrootcert` pointing at the
-root CA already mounted in the pod. That checks the chain *and* the hostname, so
-it proves which server answered. Never downgrade to `require` or `verify-ca` to
-make something connect — they encrypt without proving that, which is how a
-misrouted connection becomes a silent one.
+`APPLE_HEALTH_DSN` uses `sslmode=verify-full` with `sslrootcert`, `sslcert` and
+`sslkey`. Both directions are checked: we verify the server (chain *and*
+hostname, so it proves which server answered) and the server verifies us.
 
-No client certificate is involved, and none is needed for the above: `verify-full`
-is about verifying the *server*. The server currently authenticates us by
-password, over a link we have verified.
+Never downgrade to `require` or `verify-ca` to make something connect. They
+encrypt without proving which server answered, which is how a misrouted
+connection becomes a silent one.
 
-### Making it mutual (optional hardening)
+Confirm what the server actually sees, rather than trusting that a connection
+succeeding means the certificate was used:
 
-This adds the other direction — the server verifying us — so a leaked password
-alone is not enough to connect.
+```sql
+SELECT ssl, version, client_dn FROM pg_stat_ssl WHERE pid = pg_backend_pid();
+-- (t, TLSv1.3, /C=JP/ST=Tokyo/L=Kita/O=Dev2/CN=apple_health)
+```
 
-**It needs one decision first.** The certificate's CN must equal the PostgreSQL
-role name exactly; Postgres matches them directly. Our role is `apple_health`,
-with an underscore, and the CA tool's CN validator accepts only
-`[a-zA-Z0-9-]` and dots — `ca.py generate apple_health` is rejected outright.
-Every client certificate issued on this estate so far (`tvledger`, `biblio`,
-`livredecave`) is a hyphen-free word matching its role, so this project is the
-odd one out. Either:
+### Two holders, one identity
 
-- **Rename the role** to `apple-health`, matching the namespace, the image and
-  the OIDC client — one `ALTER ROLE` in the same `ssh ras12` session the
-  `pg_hba` edit already requires, so it costs no extra step. A SCRAM password
-  survives a rename (an MD5 one would not; the server is on SCRAM). The database
-  name can stay `apple_health` — nothing requires it to match.
-- **Or widen the CA validator** to allow underscores in client CNs. Defensible
-  — its own docstring says "hostname *or identity name*", and an identity is not
-  a hostname — but it changes security tooling the whole estate shares.
+The certificate is held by **both** the pod and the Mac. Postgres matches the CN
+against the role name, so any second certificate for this role would have to
+carry the same CN and would be the same identity anyway — separate certificates
+would buy nothing but a second expiry to track.
 
-Then, in order, so there is no window where the pod cannot connect:
+That matters when changing `pg_hba`: a rule requiring a client certificate for
+`apple_health` applies to the Mac too, and the Mac is what runs ingest. Adding
+that rule while the Mac still connected on `sslmode=require` would have stopped
+`ah-pgsync` — leaving Postgres quietly behind SQLite, which is the exact failure
+this project exists to stop. The Mac's copy lives in `~/.config/apple-health/`
+beside the password, and `tools/launchd/net.dev2.healthsync.sync.plist` carries
+the full DSN.
 
-1. `uv run --directory /Volumes/nicolas-data/Repositories/CA/2025 ca.py generate <cn> --profile client`
-   — prompts for the Intermediate CA passphrase. Lands in `issued/<cn>/`.
-   Valid 500 days and **does not auto-renew**; there is no ACME path for client
-   certs. `ca.py list` shows expiry.
-2. Seal `<cn>.crt` and `<cn>.key` into `apple-health-certs` and mount at
-   `/etc/apple-health/certs` with `defaultMode: 0600` — libpq refuses a group-
-   or world-readable key. Never commit the `.key` or the `-withkey.pem` bundle.
-3. Add `&sslcert=...&sslkey=...` to the DSN and roll. The server does not yet
-   require the certificate, so this is a no-op if it is wrong — which is why it
-   goes before step 4.
-4. `hostssl apple_health <role> 172.16.0.0/16 scram-sha-256 clientcert=verify-full`
-   in `/etc/postgresql/17/main/pg_hba.conf` on ras12, **above** the catch-all
-   `host all all 172.16.0.0/16 scram-sha-256` — first match wins — then
-   `sudo systemctl reload postgresql@17-main`. The reload does not drop existing
-   connections, so verify with a fresh one before walking away.
+### Expiry
+
+**2028-01-09, and it does not auto-renew.** Client certificates have no ACME
+path, unlike the web certificates. `ca.py list` shows expiry with a Type column.
+When it is reissued, both holders need the new copy: reseal for the pod
+(`./seal-secrets.sh`) and re-copy into `~/.config/apple-health/` for the Mac.
+
+### The server-side rule
+
+The last step, which requires root on ras12. In
+`/etc/postgresql/17/main/pg_hba.conf`, **above** the catch-all
+`host all all 172.16.0.0/16 scram-sha-256` — the first matching rule wins:
+
+```
+hostssl apple_health  apple_health  172.16.0.0/16  scram-sha-256  clientcert=verify-full
+```
+
+Then `sudo systemctl reload postgresql@17-main`. The reload does not drop
+existing connections, so a connection opened before it proves nothing — verify
+with a fresh one.
+
+Requiring both a certificate and a password is deliberate: a stolen certificate
+alone is then not enough, and neither is a stolen password.

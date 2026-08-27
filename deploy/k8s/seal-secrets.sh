@@ -7,12 +7,18 @@
 #
 #   deploy/k8s/sealed-db.yaml      APPLE_HEALTH_DB_PASSWORD  (the Postgres role)
 #   deploy/k8s/sealed-oauth2.yaml  the oauth2-proxy client and cookie secrets
+#   deploy/k8s/sealed-certs.yaml   the Postgres client certificate and its key
 #
 # Inputs, none of which are in git:
 #   ~/.config/apple-health/db-password     written when the role was provisioned
 #   tmp/sso/client-secret.txt              plaintext whose pbkdf2 hash is in
 #                                          Authelia's configmap
 #   tmp/sso/cookie-secret.txt              32 hex characters — see below
+#   CA/2025/issued/apple_health/           the client certificate and key. The
+#                                          key and the -withkey.pem bundle must
+#                                          never be committed anywhere; the CA
+#                                          repo's .gitignore already excludes
+#                                          them. Only the sealed form travels.
 #
 # The cookie secret must be hex, not `openssl rand -base64 32`. oauth2-proxy
 # runs the value through base64.RawURLEncoding; standard base64 emits `+` and
@@ -39,4 +45,13 @@ kubectl create secret generic apple-health-oauth2 --namespace apple-health \
   --from-file=OAUTH2_PROXY_COOKIE_SECRET=tmp/sso/cookie-secret.txt \
   --dry-run=client -o yaml | seal > deploy/k8s/sealed-oauth2.yaml
 
-echo "sealed -> deploy/k8s/sealed-db.yaml deploy/k8s/sealed-oauth2.yaml"
+# The certificate's CN must equal the PostgreSQL role name exactly — Postgres
+# matches them directly, so CN=apple_health authenticates as apple_health and
+# nothing else. Reissue on any rename.
+CERTS=/Volumes/nicolas-data/Repositories/CA/2025/issued/apple_health
+kubectl create secret generic apple-health-certs --namespace apple-health \
+  --from-file=apple_health.crt="$CERTS/apple_health.crt" \
+  --from-file=apple_health.key="$CERTS/apple_health.key" \
+  --dry-run=client -o yaml | seal > deploy/k8s/sealed-certs.yaml
+
+echo "sealed -> deploy/k8s/sealed-db.yaml deploy/k8s/sealed-oauth2.yaml deploy/k8s/sealed-certs.yaml"
