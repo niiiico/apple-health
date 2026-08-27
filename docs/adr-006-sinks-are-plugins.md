@@ -154,21 +154,25 @@ heart-rate half moved. Claiming the parameter had gone would be the same kind of
 overstatement as "the zone model is defined once" was before the review caught
 it. Retiring it needs route points in the store, which nothing needs yet.
 
-### The database connection is below the house standard, deliberately and visibly
+### The database connection verifies the server; it is not yet mutual
 
-The pod connects with `sslmode=require`. That encrypts the connection but proves
-nothing about *which server answered* — tvledger's own ConfigMap says so in as
-many words, and the standard here is `verify-full` with a client certificate.
+The pod connects with `sslmode=verify-full`, which checks the certificate chain
+*and* that the hostname matches — so it proves which server answered. `require`
+and `verify-ca` encrypt without proving that. Do not downgrade to them to make
+something connect.
 
-It is `require` because issuing that certificate needs the Intermediate CA
-passphrase typed by hand, and the person with the passphrase was not at the
-keyboard. That is a scheduling fact, not an architectural one, so it is written
-down rather than left to be discovered: an undocumented `require` is
-indistinguishable from someone having quietly downgraded it to make a connection
-work, which is precisely the move the file warns against.
+An earlier draft of this section said the connection was stuck on `require`
+until a client certificate could be issued. That was wrong, and worth recording
+because the error is an easy one to repeat: `verify-full` describes how *this*
+end verifies the *server*, and needs only the root CA, which was already mounted
+in the pod for oauth2-proxy. A client certificate is the other direction — the
+server verifying us — and the two were conflated.
 
-The steps to close it are in `deploy/k8s/README.md`. Recorded here because a
-known gap that lives only in a deployment README is a gap that gets forgotten.
+What remains is therefore genuine mutual TLS: today the server authenticates
+this connection by password alone, over a link we have verified. Adding a client
+certificate needs the Intermediate CA passphrase typed by hand, and it needs one
+naming decision, both spelled out in `deploy/k8s/README.md`. It is hardening on
+top of a connection that is already sound, not a gap papered over.
 
 ## Consequences
 

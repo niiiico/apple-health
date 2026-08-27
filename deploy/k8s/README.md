@@ -99,24 +99,54 @@ curl -s http://172.16.22.27:30890/healthz   # coverage instant, no session neede
 A 302 carrying `client_id=apple-health` is the gate working. If it lands on
 `error=invalid_client`, Authelia has not been told about the client yet.
 
-## The database connection is not yet at the house standard
+## The database connection: verified, not yet mutual
 
-`APPLE_HEALTH_DSN` uses `sslmode=require`. That encrypts the connection but
-proves nothing about which server answered — `verify-full` with a client
-certificate is what tvledger uses and what this should become. Issuing the
-certificate needs the Intermediate CA passphrase typed by hand (see the
-`add-postgres-user` skill), which is the only reason it is not done.
+`APPLE_HEALTH_DSN` uses `sslmode=verify-full` with `sslrootcert` pointing at the
+root CA already mounted in the pod. That checks the chain *and* the hostname, so
+it proves which server answered. Never downgrade to `require` or `verify-ca` to
+make something connect — they encrypt without proving that, which is how a
+misrouted connection becomes a silent one.
 
-The remaining work, in order:
+No client certificate is involved, and none is needed for the above: `verify-full`
+is about verifying the *server*. The server currently authenticates us by
+password, over a link we have verified.
 
-1. `uv run /Volumes/nicolas-data/Repositories/CA/2025/ca.py generate apple_health --profile client`
-2. Seal `apple_health.crt`, `apple_health.key` and `ca.cert.pem` into
-   `apple-health-certs`; mount at `/etc/apple-health/certs` with
-   `defaultMode: 0600` — libpq refuses a group- or world-readable key.
-3. Switch `APPLE_HEALTH_DSN` to the `verify-full` form spelled out in
-   `apple-health.yaml`.
-4. Add `hostssl apple_health apple_health 172.16.0.0/16 scram-sha-256
-   clientcert=verify-full` to `pg_hba.conf` on ras12 **above** the catch-all —
-   first match wins — and `sudo systemctl reload postgresql@17-main`.
+### Making it mutual (optional hardening)
 
-Do not resolve a connection failure by downgrading below `require`.
+This adds the other direction — the server verifying us — so a leaked password
+alone is not enough to connect.
+
+**It needs one decision first.** The certificate's CN must equal the PostgreSQL
+role name exactly; Postgres matches them directly. Our role is `apple_health`,
+with an underscore, and the CA tool's CN validator accepts only
+`[a-zA-Z0-9-]` and dots — `ca.py generate apple_health` is rejected outright.
+Every client certificate issued on this estate so far (`tvledger`, `biblio`,
+`livredecave`) is a hyphen-free word matching its role, so this project is the
+odd one out. Either:
+
+- **Rename the role** to `apple-health`, matching the namespace, the image and
+  the OIDC client — one `ALTER ROLE` in the same `ssh ras12` session the
+  `pg_hba` edit already requires, so it costs no extra step. A SCRAM password
+  survives a rename (an MD5 one would not; the server is on SCRAM). The database
+  name can stay `apple_health` — nothing requires it to match.
+- **Or widen the CA validator** to allow underscores in client CNs. Defensible
+  — its own docstring says "hostname *or identity name*", and an identity is not
+  a hostname — but it changes security tooling the whole estate shares.
+
+Then, in order, so there is no window where the pod cannot connect:
+
+1. `uv run --directory /Volumes/nicolas-data/Repositories/CA/2025 ca.py generate <cn> --profile client`
+   — prompts for the Intermediate CA passphrase. Lands in `issued/<cn>/`.
+   Valid 500 days and **does not auto-renew**; there is no ACME path for client
+   certs. `ca.py list` shows expiry.
+2. Seal `<cn>.crt` and `<cn>.key` into `apple-health-certs` and mount at
+   `/etc/apple-health/certs` with `defaultMode: 0600` — libpq refuses a group-
+   or world-readable key. Never commit the `.key` or the `-withkey.pem` bundle.
+3. Add `&sslcert=...&sslkey=...` to the DSN and roll. The server does not yet
+   require the certificate, so this is a no-op if it is wrong — which is why it
+   goes before step 4.
+4. `hostssl apple_health <role> 172.16.0.0/16 scram-sha-256 clientcert=verify-full`
+   in `/etc/postgresql/17/main/pg_hba.conf` on ras12, **above** the catch-all
+   `host all all 172.16.0.0/16 scram-sha-256` — first match wins — then
+   `sudo systemctl reload postgresql@17-main`. The reload does not drop existing
+   connections, so verify with a fresh one before walking away.
