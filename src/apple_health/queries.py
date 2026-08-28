@@ -67,6 +67,12 @@ def context(store: Store, tz: tzinfo | None = None) -> dict:
                   "note": r["note"]} for r in cur.fetchall()]
         cur.execute("SELECT min(started_at) lo, max(started_at) hi, count(*) n FROM workouts")
         span = cur.fetchone()
+        cur.execute("""SELECT session_id, asked_at, question, answer, queries
+                         FROM chat_turns ORDER BY asked_at DESC LIMIT 30""")
+        history = [{"session_id": r["session_id"],
+                    "asked_at": r["asked_at"].isoformat(),
+                    "question": r["question"], "answer": r["answer"],
+                    "queries": r["queries"]} for r in cur.fetchall()]
         cur.execute("SELECT body, updated_at FROM documents WHERE slug = 'plan'")
         row = cur.fetchone()
         plan = ({"body": row["body"], "updated_at": row["updated_at"].isoformat()}
@@ -91,6 +97,7 @@ def context(store: Store, tz: tzinfo | None = None) -> dict:
         # rather than inventing a plausible objective to advise towards.
         "goals": goals,
         "plan": plan,
+        "chat_history": history,
     }
 
 
@@ -356,3 +363,31 @@ def document(store: Store, slug: str | None = None) -> dict:
                     "documents": [r["slug"] for r in cur.fetchall()]}
         return {"slug": row["slug"], "volatility": row["volatility"],
                 "updated_at": row["updated_at"].isoformat(), "body": row["body"]}
+
+
+def chat_history(store: Store, limit: int = 40,
+                 session_id: str | None = None) -> dict:
+    """Past conversations, most recent first.
+
+    Grouped by session so a thread reads as a thread. `session_id` narrows to
+    one; without it this is the whole history, newest first.
+    """
+    with store.cursor() as cur:
+        if session_id:
+            cur.execute(
+                """SELECT session_id, asked_at, question, answer, queries, model
+                     FROM chat_turns WHERE session_id = %s
+                 ORDER BY asked_at""", (session_id,))
+        else:
+            cur.execute(
+                """SELECT session_id, asked_at, question, answer, queries, model
+                     FROM chat_turns ORDER BY asked_at DESC LIMIT %s""", (limit,))
+        rows = cur.fetchall()
+    return {
+        "turns": [
+            {"session_id": r["session_id"], "asked_at": r["asked_at"].isoformat(),
+             "question": r["question"], "answer": r["answer"],
+             "queries": r["queries"], "model": r["model"]}
+            for r in rows
+        ],
+    }

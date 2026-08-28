@@ -89,6 +89,10 @@ def main(argv: list[str] | None = None) -> int:
     doc = sub.add_parser("doc", help="reference documents; no argument lists them")
     doc.add_argument("--slug", default=None)
 
+    c = sub.add_parser("chat", help="past conversations, most recent first")
+    c.add_argument("--limit", type=int, default=20)
+    c.add_argument("--session", default=None)
+
     args = ap.parse_args(argv)
 
     # race_detail reads files, not the database, so it needs no connection —
@@ -116,6 +120,9 @@ def main(argv: list[str] | None = None) -> int:
             payload = {"start": args.start.isoformat(), "end": args.end.isoformat()}
             _record("reviews", payload)
             out = queries.reviews(store, args.start, args.end)
+        elif args.command == "chat":
+            _record("chat", {"limit": args.limit, "session": args.session})
+            out = queries.chat_history(store, args.limit, args.session)
         elif args.command == "doc":
             _record("doc", {"slug": args.slug})
             out = queries.document(store, args.slug)

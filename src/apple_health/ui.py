@@ -51,22 +51,37 @@ def zone_bands_section(model: dict) -> str:
 </div>"""
 
 
-def chat_section() -> str:
-    """A conversation box.
+def chat_section(history: list[dict] | None = None) -> str:
+    """A conversation box, above everything already said.
 
-    Empty on load and never restored: the transcript lives in the CLI's own
-    state in the pod, so a reload starts fresh. That is deliberate rather than a
-    limitation — a chat is a question answered, and anything worth keeping is a
-    note, a goal or a review, all of which are stored.
+    History is stored and shown: an answer worth acting on is worth re-reading,
+    and a question already asked is worth not asking twice. The model's *memory*
+    of a thread still ends at a pod restart — the CLI keeps that in the pod —
+    but the transcript outlives it, so what was said is never lost with it.
     """
-    return """<h2>Demander</h2>
+    turns = ""
+    for turn in (history or []):
+        queries = turn.get("queries") or []
+        note = (f'<div class="note">{len(queries)} requête(s) : '
+                f'{_esc(", ".join(queries))}</div>' if queries else "")
+        turns += (
+            f'<div class="turn you">{_esc(turn["question"])}</div>'
+            f'<div class="turn claude">{_esc(turn["answer"])}{note}'
+            f'<div class="note">{_esc(turn["asked_at"][:16].replace("T", " "))}</div>'
+            f"</div>")
+    past = (f'<details class="card"><summary>Conversations précédentes '
+            f'({len(history)})</summary><div class="transcript past">{turns}</div>'
+            f"</details>" if history else "")
+
+    return f"""<h2>Demander</h2>
 <div class="card chat" data-card data-chat>
   <div data-transcript class="transcript"></div>
   <textarea data-field="message" rows="2"
     placeholder="par ex. « la nage de mardi, c'était correct ? »"></textarea>
   <button data-action="chat" data-chat-send>Envoyer</button>
   <span data-status></span>
-</div>"""
+</div>
+{past}"""
 
 
 def plan_section(plan: dict | None) -> str:
@@ -203,7 +218,7 @@ def render(context: dict, sessions: list[dict], start: date, end: date) -> str:
         "<h1>health</h1>"
         + coverage_line(context["coverage"])
         + window_nav(start, end, context["record"])
-        + chat_section()
+        + chat_section(context.get("chat_history"))
         + goals_section(context["goals"])
         + plan_section(context.get("plan"))
         + zone_bands_section(context["zone_model"])

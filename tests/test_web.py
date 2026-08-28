@@ -346,15 +346,31 @@ def test_a_chat_turn_threads_the_conversation(monkeypatch):
     assert out["queries"] == ["session"]
 
 
-def test_a_chat_turn_stores_nothing(monkeypatch):
-    """A chat is a question answered, not a fact about the training record.
+def test_a_chat_turn_is_stored_with_its_question(monkeypatch):
+    """History is kept: an answer worth acting on is worth re-reading.
 
-    Anything worth keeping is a note, a goal or a review — all of which are
-    stored deliberately and are attributable.
+    Question and answer go in one row because they are only ever read together,
+    and a half-stored exchange is a question with no answer.
     """
     from apple_health.advisor import Run
     monkeypatch.setattr("apple_health.advisor.chat",
-                        lambda *a, **k: Run("oui", [], session_id="s"))
+                        lambda *a, **k: Run("oui", [{"query": "context"}],
+                                            session_id="s-1"))
     store = _Store()
     web.chat(store, {"message": "alors ?"})
+    sql, params = store.cur.executed[0]
+    assert "INSERT INTO chat_turns" in sql
+    assert params[0] == "s-1" and params[1] == "alors ?" and params[2] == "oui"
+    assert store.committed
+
+
+def test_a_failed_turn_stores_no_question(monkeypatch):
+    """A question with no answer is a worse record than no record."""
+    def _boom(*a, **k):
+        raise RuntimeError("claude exited 1")
+
+    monkeypatch.setattr("apple_health.advisor.chat", _boom)
+    store = _Store()
+    with pytest.raises(RuntimeError):
+        web.chat(store, {"message": "alors ?"})
     assert store.cur.executed == [] and not store.committed

@@ -254,6 +254,27 @@ _MIGRATIONS: tuple[str, ...] = (
 
     CREATE INDEX goals_active ON goals (archived_at) WHERE archived_at IS NULL;
     """,
+    # 8 — the conversations. Originally these were kept nowhere, on the argument
+    # that a chat is a question answered rather than a fact about training. That
+    # was wrong in practice: an answer worth acting on is worth re-reading, and
+    # a question already asked is worth not asking twice.
+    #
+    # One row per exchange rather than per message: they are only ever written
+    # and read together, and a half-stored exchange is a question with no answer.
+    """
+    CREATE TABLE chat_turns (
+        id         bigserial PRIMARY KEY,
+        session_id text NOT NULL,
+        asked_at   timestamptz NOT NULL DEFAULT now(),
+        question   text NOT NULL,
+        answer     text NOT NULL,
+        queries    jsonb,
+        model      text
+    );
+
+    CREATE INDEX chat_turns_recent ON chat_turns (asked_at DESC);
+    CREATE INDEX chat_turns_session ON chat_turns (session_id, asked_at);
+    """,
 )
 
 

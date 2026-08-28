@@ -192,10 +192,9 @@ def chat(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
     """One conversational turn.
 
     `session_id` threads the conversation. It is the CLI's own, kept in the
-    pod's filesystem, so it does not survive a restart — the reply is returned
-    to the browser rather than stored, because a chat is a question answered,
-    not a fact about the training record. Anything worth keeping goes in a note
-    or a review.
+    pod's filesystem, so the model's *memory* of a thread ends at a pod restart —
+    but the transcript is stored here regardless, so what was said survives even
+    when the thread it belonged to cannot be continued.
     """
     from . import advisor
 
@@ -206,8 +205,22 @@ def chat(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("message is too long")
 
     run = advisor.chat(message, payload.get("session_id") or None)
+    queries = [c.get("query") for c in run.calls]
+
+    # Stored after the answer exists, never before: a question with no answer is
+    # a worse record than no record. The session id groups a conversation; it is
+    # the CLI's own, so a pod restart starts a new one and the old thread stays
+    # readable rather than silently continuing under a dead id.
+    with store.cursor() as cur:
+        cur.execute(
+            """INSERT INTO chat_turns (session_id, question, answer, queries, model)
+               VALUES (%s,%s,%s,%s,%s)""",
+            (run.session_id or "unknown", message, run.text,
+             json.dumps(queries), advisor.MODEL))
+    store.commit()
+
     return {"message": "", "reply": run.text, "session_id": run.session_id,
-            "queries": [c.get("query") for c in run.calls]}
+            "queries": queries}
 
 
 ACTIONS: dict[str, Callable[[Store, dict[str, Any]], dict[str, Any]]] = {
@@ -262,6 +275,17 @@ def handler_for(dsn: str | None, window_days: int = WINDOW_DAYS):
     """
 
     class Handler(http.server.BaseHTTPRequestHandler):
+        # BaseHTTPRequestHandler defaults to HTTP/1.0, which closes the
+        # connection after every response. oauth2-proxy speaks HTTP/1.1 and
+        # pools connections, so it kept reusing sockets this server had already
+        # closed: the request never arrived, the proxy answered 502 with an HTML
+        # page, and the browser's JSON.parse on that HTML reported a "syntax
+        # error" — three layers away from the cause.
+        #
+        # Safe because `_send` always sets Content-Length, which is what
+        # keep-alive needs to find the end of a response.
+        protocol_version = "HTTP/1.1"
+
         def _send(self, code: int, body: bytes, content_type: str) -> None:
             self.send_response(code)
             self.send_header("Content-Type", content_type)
