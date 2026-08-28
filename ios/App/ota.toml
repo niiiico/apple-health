@@ -1,0 +1,8 @@
+# Release settings for otactl. See ~/Repositories/ota.
+#
+# iOS only: HealthSync reads HealthKit, which exists on no other platform —
+# `HKHealthStore.isHealthDataAvailable()` is false on macOS even though the
+# framework ships there for Mac Catalyst (ADR-005).
+app = "healthsync"
+scheme = "App"
+platforms = ["ios"]
