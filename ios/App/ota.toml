@@ -6,3 +6,15 @@
 app = "healthsync"
 scheme = "App"
 platforms = ["ios"]
+
+[ios]
+# `development`, not the default `release-testing`. Ad Hoc export needs a
+# matching Ad Hoc profile, and the only one on this Mac is for a template
+# placeholder bundle id; creating a real one needs an authenticated Xcode
+# account, which a headless release does not have.
+#
+# A development-signed build installs over the air perfectly well on a device
+# already in the profile — which is the whole audience here, one phone. The
+# cost is that the profile expires (2027-07-10) and the build stops launching
+# then, where an Ad Hoc build would have lasted a year from issue.
+export_method = "development"
