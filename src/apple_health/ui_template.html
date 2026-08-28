@@ -109,7 +109,8 @@ document.addEventListener("click", async (e) => {
     say(transcript, "you", asked);
     box.value = "";
     b.disabled = true; status.textContent = "…";
-    const r = await ask(payload);
+    const r = await ask(payload, (secs) =>
+      status.textContent = secs === null ? "…" : `réflexion… ${secs}s`);
     b.disabled = false;
     if (r.error) { status.textContent = r.error; status.className = "note warn"; return; }
     status.textContent = ""; 
@@ -118,19 +119,59 @@ document.addEventListener("click", async (e) => {
     return;
   }
 
+  // Slow buttons take the same polling path; fast ones stay a single request.
+  if (b.dataset.slow) {
+    const r = await run(b.dataset.action, payload, (secs) =>
+      status.textContent = secs === null ? "…" : `en cours… ${secs}s`);
+    b.disabled = false;
+    if (r.error) { status.textContent = r.error; status.className = "note warn"; return; }
+    status.textContent = r.message || "fait"; status.className = "note saved";
+    if (b.dataset.reload) setTimeout(() => location.reload(), 600);
+    return;
+  }
+
   const ok = await post(b.dataset.action, payload, status);
-  if (b.dataset.slow) b.disabled = false;
   if (ok && b.dataset.reload) setTimeout(() => location.reload(), 400);
 });
 
-async function ask(payload) {
+// Slow actions return a handle, not an answer. Polling short requests survives
+// a screen lock, an app switch and a moment of bad signal, none of which a
+// two-minute connection does — that failure arrived as "TypeError: Load failed"
+// with the work already running, and the answer already stored.
+async function run(action, payload, onTick) {
+  let started;
   try {
-    const r = await fetch("/api/chat", {
+    const r = await fetch("/api/" + action, {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify(payload)
     });
-    return await r.json();
+    started = await r.json();
+    if (started.error) return started;
   } catch (e) { return {error: String(e)}; }
+
+  const job = started.job;
+  if (!job) return started;                       // fast action, already done
+
+  for (let i = 0; i < 300; i++) {                 // 300 × 2s = 10 minutes
+    await new Promise(r => setTimeout(r, 2000));
+    let s;
+    try {
+      s = await (await fetch("/api/job?id=" + encodeURIComponent(job))).json();
+    } catch (e) {
+      // A blip while polling is not a failure: the work continues server-side.
+      if (onTick) onTick(null);
+      continue;
+    }
+    if (s.state === "running") { if (onTick) onTick(s.elapsed); continue; }
+    if (s.state === "done") return s.result || {};
+    return {error: s.error || "échec"};
+  }
+  return {error: "toujours en cours après 10 min — recharge la page, la réponse "
+                 + "y sera si elle a abouti"};
+}
+
+async function ask(payload, onTick) {
+  return await run("chat", payload, onTick);
 }
 
 function say(transcript, who, text, queries) {

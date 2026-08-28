@@ -78,7 +78,7 @@ def chat_section(history: list[dict] | None = None) -> str:
   <div data-transcript class="transcript"></div>
   <textarea data-field="message" rows="2"
     placeholder="par ex. « la nage de mardi, c'était correct ? »"></textarea>
-  <button data-action="chat" data-chat-send>Envoyer</button>
+  <button data-action="chat" data-chat-send data-slow>Envoyer</button>
   <span data-status></span>
 </div>
 {past}"""

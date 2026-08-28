@@ -8,6 +8,7 @@ rows for the same reason. This file is the payoff for that split.
 from __future__ import annotations
 
 import html
+import threading
 from datetime import date
 
 import pytest
@@ -43,12 +44,20 @@ class _Store:
     def __init__(self, answers=None):
         self.cur = _Cur(answers)
         self.committed = False
+        self.rolled_back = False
+        self.closed = False
 
     def cursor(self):
         return self.cur
 
     def commit(self):
         self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
+
+    def close(self):
+        self.closed = True
 
 
 # --- zone bands --------------------------------------------------------------
@@ -374,3 +383,80 @@ def test_a_failed_turn_stores_no_question(monkeypatch):
     with pytest.raises(RuntimeError):
         web.chat(store, {"message": "alors ?"})
     assert store.cur.executed == [] and not store.committed
+
+
+# --- slow actions run behind the request -------------------------------------
+# A phone cannot hold an HTTP connection open for two minutes: a screen lock, an
+# app switch or a moment of bad signal drops it, and the browser reports the loss
+# as a failure while the work is already running and its result already stored.
+
+def test_slow_actions_are_the_ones_that_ask_claude():
+    assert web.SLOW == {"chat", "review_session", "write_plan"}
+    # Everything else stays a single request — a note must save instantly.
+    assert "set_session_note" not in web.SLOW and "set_goal" not in web.SLOW
+
+
+def test_a_job_reports_running_then_its_result(monkeypatch):
+    import time as _t
+    release = threading.Event()
+    monkeypatch.setitem(web.ACTIONS, "chat",
+                        lambda store, p: release.wait(5) and {"reply": "voilà"})
+    monkeypatch.setattr(web, "Store", lambda dsn: _Store())
+
+    job = web.start_job(None, "chat", {"message": "?"})
+    assert web.job_state(job)["state"] == "running"
+    release.set()
+    for _ in range(50):
+        if web.job_state(job)["state"] != "running":
+            break
+        _t.sleep(0.1)
+    state = web.job_state(job)
+    assert state["state"] == "done" and state["result"] == {"reply": "voilà"}
+
+
+def test_a_failing_job_reports_why(monkeypatch):
+    import time as _t
+
+    def _boom(store, payload):
+        raise RuntimeError("claude exited 1")
+
+    monkeypatch.setitem(web.ACTIONS, "chat", _boom)
+    monkeypatch.setattr(web, "Store", lambda dsn: _Store())
+    job = web.start_job(None, "chat", {"message": "?"})
+    for _ in range(50):
+        if web.job_state(job)["state"] != "running":
+            break
+        _t.sleep(0.1)
+    state = web.job_state(job)
+    assert state["state"] == "failed" and "claude exited 1" in state["error"]
+
+
+def test_an_unknown_job_does_not_imply_the_work_failed():
+    """The result is stored where it belongs, so a lost handle is not lost work."""
+    state = web.job_state("nope")
+    assert state["state"] == "unknown"
+    assert "rechargement" in state["error"]
+
+
+def test_a_job_records_its_result_even_if_the_connection_will_not_close(monkeypatch):
+    """Recording the outcome must not depend on a clean close.
+
+    It used to: a close() that raised skipped the write and left the job
+    reporting "running" for ever — the one state a client cannot recover from,
+    because it never stops polling and never learns anything.
+    """
+    import time as _t
+
+    class _Awkward(_Store):
+        def close(self):
+            raise OSError("connection already gone")
+
+    monkeypatch.setitem(web.ACTIONS, "chat", lambda store, p: {"reply": "quand même"})
+    monkeypatch.setattr(web, "Store", lambda dsn: _Awkward())
+    job = web.start_job(None, "chat", {"message": "?"})
+    for _ in range(50):
+        if web.job_state(job)["state"] != "running":
+            break
+        _t.sleep(0.1)
+    state = web.job_state(job)
+    assert state["state"] == "done" and state["result"] == {"reply": "quand même"}

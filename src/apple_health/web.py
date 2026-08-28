@@ -31,6 +31,9 @@ from __future__ import annotations
 import argparse
 import http.server
 import json
+import threading
+import time
+import uuid
 from datetime import date, datetime, timedelta
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
@@ -266,6 +269,90 @@ def render_session_page(store: Store, workout_id: int) -> str:
     return ui.render_session(queries.session_detail(store, workout_id))
 
 
+# Actions that ask Claude, and so take a minute or two. These are never run
+# inside the request: a phone holding an HTTP connection open that long loses it
+# to a screen lock, an app switch or a moment of bad signal, and Safari reports
+# the loss as "TypeError: Load failed" with the work already half-done. They run
+# in a background thread instead and the client polls, which survives all three.
+SLOW = {"chat", "review_session", "write_plan"}
+
+# Finished jobs are kept briefly so a client that blinked can still collect its
+# answer. Deliberately in memory rather than a table: the *result* of every slow
+# action is already persisted where it belongs — a chat turn, a review, the plan
+# — so a lost job handle costs the answer's delivery, never the answer itself.
+# Reloading the page finds it.
+_JOBS: dict[str, dict[str, Any]] = {}
+_JOBS_LOCK = threading.Lock()
+_JOB_TTL_SECONDS = 1800
+
+
+def _prune_jobs(now: float) -> None:
+    """Forget finished jobs nobody collected. Called on each new job."""
+    with _JOBS_LOCK:
+        for key in [k for k, j in _JOBS.items()
+                    if j.get("finished_at", now) < now - _JOB_TTL_SECONDS]:
+            del _JOBS[key]
+
+
+def start_job(dsn: str | None, name: str, payload: dict[str, Any]) -> str:
+    """Run a slow action in the background; return the handle to poll."""
+    job_id = uuid.uuid4().hex
+    _prune_jobs(time.time())
+    with _JOBS_LOCK:
+        _JOBS[job_id] = {"state": "running", "action": name,
+                         "started_at": time.time()}
+
+    def run() -> None:
+        # Its own Store: a psycopg connection belongs to one thread, and sharing
+        # the request's would corrupt both.
+        store = None
+        outcome: dict[str, Any] = {
+            "state": "failed", "error": "le job s'est arrêté sans rien dire"}
+        try:
+            store = Store(dsn)
+            outcome = {"state": "done", "result": ACTIONS[name](store, payload)}
+        except ValueError as exc:
+            outcome = {"state": "failed", "error": str(exc)}
+        except Exception as exc:                 # noqa: BLE001
+            outcome = {"state": "failed",
+                       "error": f"{exc.__class__.__name__}: {exc}"}
+        finally:
+            # Recording the outcome must not depend on the connection closing
+            # cleanly. It used to: a close() that raised skipped the write and
+            # left the job polling as "running" for ever, which is the one state
+            # a client cannot recover from.
+            if store is not None:
+                for step in (store.rollback, store.close):
+                    try:
+                        if outcome["state"] == "done" and step is store.rollback:
+                            continue
+                        step()
+                    except Exception:            # noqa: BLE001, S110
+                        pass
+            outcome["finished_at"] = time.time()
+            with _JOBS_LOCK:
+                _JOBS[job_id] = outcome
+
+    threading.Thread(target=run, name=f"job-{name}", daemon=True).start()
+    return job_id
+
+
+def job_state(job_id: str) -> dict[str, Any]:
+    """What a job is doing, or what it did."""
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+    if job is None:
+        # Either it never existed or it has been pruned. Say which is possible
+        # rather than implying the work failed — the answer is likely on the page.
+        return {"state": "unknown",
+                "error": "job inconnu — s'il a abouti, la réponse est sur la page "
+                         "après rechargement"}
+    if job["state"] == "running":
+        return {"state": "running",
+                "elapsed": round(time.time() - job["started_at"])}
+    return job
+
+
 def handler_for(dsn: str | None, window_days: int = WINDOW_DAYS):
     """Build the request handler.
 
@@ -297,6 +384,10 @@ def handler_for(dsn: str | None, window_days: int = WINDOW_DAYS):
             self._send(code, json.dumps(payload).encode(), "application/json")
 
         def do_GET(self):  # noqa: N802
+            parsed_early = urlparse(self.path)
+            if parsed_early.path == "/api/job":
+                job_id = (parse_qs(parsed_early.query).get("id") or [""])[0]
+                return self._json(200, job_state(job_id))
             if self.path == "/livez":
                 # Deliberately does not touch Postgres. Liveness asks only
                 # whether this process is still serving; a database outage
@@ -346,6 +437,16 @@ def handler_for(dsn: str | None, window_days: int = WINDOW_DAYS):
                 payload = json.loads(self.rfile.read(length) or b"{}")
             except (ValueError, json.JSONDecodeError) as exc:
                 return self._json(400, {"error": f"bad request body: {exc}"})
+
+            # Slow actions answer immediately with a handle and do the work
+            # behind the request, so no phone has to hold a connection open for
+            # two minutes to receive an answer.
+            name = urlparse(self.path).path.removeprefix("/api/")
+            if name in SLOW:
+                try:
+                    return self._json(202, {"job": start_job(dsn, name, payload)})
+                except Exception as exc:         # noqa: BLE001
+                    return self._json(500, {"error": f"{exc.__class__.__name__}: {exc}"})
 
             store = Store(dsn)
             try:
