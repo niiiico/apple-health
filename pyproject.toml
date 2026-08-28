@@ -35,6 +35,7 @@ ah-pgsync = "apple_health.commands.pgsync:main"
 ah-web = "apple_health.web:main"
 ah-advise = "apple_health.advisor:main"
 ah-query = "apple_health.query_cli:main"
+ah-swim = "apple_health.commands.swimsplits:main"
 
 [build-system]
 requires = ["hatchling"]

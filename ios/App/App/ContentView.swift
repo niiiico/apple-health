@@ -39,6 +39,16 @@ struct ContentView: View {
                 Label("Backfill HR series", systemImage: "waveform.path.ecg")
                     .frame(maxWidth: .infinity)
             }
+
+            // Swim lengths were never exported, so every past pool session on
+            // this device has splits waiting in HealthKit that the record has
+            // never seen. Worth running once.
+            Button {
+                Task { await runSwimBackfill() }
+            } label: {
+                Label("Backfill swim lengths", systemImage: "figure.pool.swim")
+                    .frame(maxWidth: .infinity)
+            }
             .buttonStyle(.bordered)
             .disabled(busy)
             .padding(.horizontal, 40)
@@ -82,6 +92,13 @@ struct ContentView: View {
         defer { busy = false }
         do { status = try await engine.backfillHRSeries() }
         catch { status = "Backfill failed: \(error.localizedDescription)" }
+    }
+
+    private func runSwimBackfill() async {
+        busy = true
+        defer { busy = false }
+        do { status = try await engine.backfillSwimLengths() }
+        catch { status = "Swim backfill failed: \(error.localizedDescription)" }
     }
 
     private func runRangeBackfill(from: Date, to: Date) async {

@@ -58,6 +58,9 @@ struct Delta: Codable {
         let indoor: Int?
         let route_file: String?
         let hr_file: String?
+        // Per-length swim splits, `swim-<uuid>.csv`. Absent for every activity
+        // but swimming, and for swims recorded before this field existed.
+        let swim_file: String?
     }
 
     struct Record: Codable {

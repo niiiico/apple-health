@@ -46,7 +46,38 @@ A single sync run (anchor advance) produces:
   older than 2026-07-11, whose deltas predate the `hr_file` field. This is
   safe only because HR CSVs are never ingested into the DB — consumers look
   them up by workout uuid, and a delta's `hr_file: null` does not mean the
-  file is absent. Nothing else may be written outside a delta.
+  file is absent.
+- **Exception — swim-length backfill.** `swim-<uuid>.csv` files MAY likewise
+  exist with no delta referencing them, written by the app's "Backfill swim
+  lengths" pass (added 2026-08-28). Unlike HR CSVs these *are* ingested, into
+  `laps`, so the loader is keyed on `(workout_id, idx)` and re-running replaces
+  rather than duplicates. `ah-pgsync`'s orphan sweep picks them up; without it a
+  backfilled season would sit in the inbox unread.
+  Nothing else may be written outside a delta.
+
+### `swim-<uuid>.csv` — per-length splits
+
+Written for pool swims only; absent for every other activity, and empty rather
+than absent is not a case that occurs.
+
+```csv
+start,end,metres
+2026-06-23T03:10:27Z,2026-06-23T03:10:49Z,25.0
+2026-06-23T03:11:01Z,2026-06-23T03:11:28Z,25.0
+```
+
+HealthKit records swimming as one `DistanceSwimming` sample per length, each
+carrying **both** a start and an end. That is finer than lap events: the swim
+time for a length is `end - start`, and the rest before the next is the gap
+between one `end` and the next `start`. A benchmark 200 is any eight
+consecutive 25 m lengths, measured wall to wall.
+
+Both timestamps are required. The HR sidecar needs only a start, and copying its
+shape here would discard the durations that make the file worth having.
+
+Producers MUST hold the unit constant at metres, for the reason `HealthTypes`
+gives: consumers add across deltas, and a changed unit corrupts the sum
+silently.
 
 ## Delta JSON
 
@@ -73,7 +104,8 @@ A single sync run (anchor advance) produces:
         "source": "Apple Watch",
         "indoor": 0,                          // 1 indoor, 0 outdoor, null unknown
         "route_file": "route-5C3A….gpx",      // null if the workout has no route
-        "hr_file": "hr-5C3A….csv"             // null if no HR samples (added 2026-07-11; older deltas lack it)
+        "hr_file": "hr-5C3A….csv",            // null if no HR samples (added 2026-07-11; older deltas lack it)
+        "swim_file": "swim-5C3A….csv"         // null unless a pool swim (added 2026-08-28; older deltas lack it)
       }
     ],
     "deleted": ["<uuid>", "…"]                // workouts removed on device since last anchor

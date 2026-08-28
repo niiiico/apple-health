@@ -26,6 +26,12 @@ enum HealthTypes {
         .init(identifier: .basalEnergyBurned,         unit: .kilocalorie(),                      name: "BasalEnergyBurned"),
         .init(identifier: .distanceWalkingRunning,    unit: .meterUnit(with: .kilo),             name: "DistanceWalkingRunning"),
         .init(identifier: .distanceCycling,           unit: .meterUnit(with: .kilo),             name: "DistanceCycling"),
+        // Added 2026-08-28. Swim distance had never been observed, so it stopped
+        // at the 2026-06-29 full export and the record has carried none since —
+        // and, more importantly, without read authorisation for this type the
+        // per-length `swim-<uuid>.csv` sidecar would query successfully and
+        // return nothing at all, which is the quietest possible failure.
+        .init(identifier: .distanceSwimming,          unit: .meterUnit(with: .kilo),             name: "DistanceSwimming"),
         .init(identifier: .stepCount,                 unit: .count(),                            name: "StepCount"),
         .init(identifier: .flightsClimbed,            unit: .count(),                            name: "FlightsClimbed"),
         .init(identifier: .appleExerciseTime,         unit: .minute(),                           name: "AppleExerciseTime"),
@@ -52,6 +58,10 @@ enum HealthTypes {
 
     /// Everything we request read authorisation for: dense + sparse quantities,
     /// workouts, and workout routes.
+    ///
+    /// Adding a type here is not cosmetic: a sample query for a type the user
+    /// has not authorised returns an empty result rather than an error, so an
+    /// unlisted type looks exactly like a workout with no data.
     static var readTypes: Set<HKObjectType> {
         var types = Set<HKObjectType>()
         for q in dense { types.insert(q.type) }

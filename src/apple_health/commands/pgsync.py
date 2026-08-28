@@ -209,6 +209,61 @@ def _merge_hr_series(cur, section: dict, inbox: Path) -> int:
     return samples
 
 
+def _merge_swim_lengths(cur, inbox: Path, section: dict) -> int:
+    """Load `swim-<uuid>.csv` sidecars into `laps`, one row per length.
+
+    HealthKit records swimming as one sample per length, each with a start and
+    an end, which is finer than lap events: the swim time is end − start and
+    the rest before the next length is the gap. That is what makes a benchmark
+    200 readable from the record — any eight consecutive 25 m lengths — instead
+    of being read off the watch by hand.
+
+    They land in `laps` rather than a new table because the shape already fits
+    (index, start, duration, distance) and the session page already renders it.
+    """
+    lengths = 0
+    for w in section.get("added", []):
+        uuid = w.get("uuid")
+        if not uuid:
+            continue
+        path = inbox / f"swim-{uuid}.csv"
+        if not path.exists():
+            # Silent by design: most workouts are not swims, and warning on
+            # every ride would train the reader to ignore the line that matters.
+            continue
+        cur.execute("SELECT id FROM workouts WHERE uuid = %s", (uuid,))
+        row = cur.fetchone()
+        if not row:
+            continue
+        batch = []
+        with open(path) as fh:
+            for idx, line in enumerate(csv.DictReader(fh), start=1):
+                try:
+                    start = datetime.fromisoformat(line["start"].replace("Z", "+00:00"))
+                    end = datetime.fromisoformat(line["end"].replace("Z", "+00:00"))
+                    metres = float(line["metres"])
+                except (KeyError, ValueError):
+                    continue
+                duration = (end - start).total_seconds()
+                if duration <= 0:
+                    # A length cannot take no time. Skipping rather than storing
+                    # it keeps a divide-by-zero out of every pace computed later.
+                    continue
+                batch.append((row["id"], idx, start, duration, metres))
+        if batch:
+            cur.executemany(
+                """INSERT INTO laps (workout_id, idx, started_at, duration_s, distance_m)
+                   VALUES (%s,%s,%s,%s,%s)
+                   ON CONFLICT (workout_id, idx) DO UPDATE SET
+                       started_at = excluded.started_at,
+                       duration_s = excluded.duration_s,
+                       distance_m = excluded.distance_m""",
+                batch,
+            )
+            lengths += len(batch)
+    return lengths
+
+
 def apply_delta(store: Store, path: Path) -> dict[str, int]:
     """Apply one delta to Postgres and record its ingest run."""
     delta = json.loads(path.read_text())
@@ -224,6 +279,7 @@ def apply_delta(store: Store, path: Path) -> dict[str, int]:
         n_daily = _merge_daily(cur, delta.get("daily_metrics", {}), replace=bool(backfill))
         n_routes = _merge_routes(cur, workouts, path.parent)
         n_hr = _merge_hr_series(cur, workouts, path.parent)
+        n_lengths = _merge_swim_lengths(cur, path.parent, workouts)
         observed = _observed_through(path.parent, path.name)
         if observed is None:
             raise ValueError(f"{path.name}: no generated_at and an unparseable name; "
@@ -235,11 +291,12 @@ def apply_delta(store: Store, path: Path) -> dict[str, int]:
             (path.name, observed, w_ins, n_rec, n_daily),
         )
     return {"workouts": w_ins, "deleted_workouts": w_del, "records": n_rec,
-            "daily": n_daily, "routes": n_routes, "hr_samples": n_hr}
+            "daily": n_daily, "routes": n_routes, "hr_samples": n_hr,
+            "lengths": n_lengths}
 
 
 def sweep_orphan_series(store: Store, inbox: Path) -> int:
-    """Load any `hr-<uuid>.csv` whose workout has no samples yet.
+    """Load any `hr-` or `swim-` sidecar whose workout has none of its data yet.
 
     Two cases need this, and neither is reachable from a delta's own
     `workouts.added`: a sidecar that arrived after the delta referencing it (the
@@ -279,6 +336,46 @@ def sweep_orphan_series(store: Store, inbox: Path) -> int:
                 )
                 loaded += cur.rowcount
                 print(f"  swept {path.name}: +{cur.rowcount} samples")
+
+        # The same two cases, for swim lengths. The app's "Backfill swim
+        # lengths" pass writes these with no delta at all, so without a sweep a
+        # recovered season of splits would sit in the inbox and never arrive.
+        for path in sorted(inbox.glob("swim-*.csv")):
+            uuid = path.stem[5:]
+            cur.execute(
+                """SELECT w.id FROM workouts w
+                    WHERE w.uuid = %s
+                      AND NOT EXISTS (SELECT 1 FROM laps l WHERE l.workout_id = w.id)""",
+                (uuid,),
+            )
+            row = cur.fetchone()
+            if not row:
+                continue
+            batch = []
+            with open(path) as fh:
+                for idx, line in enumerate(csv.DictReader(fh), start=1):
+                    try:
+                        start = datetime.fromisoformat(line["start"].replace("Z", "+00:00"))
+                        end = datetime.fromisoformat(line["end"].replace("Z", "+00:00"))
+                        metres = float(line["metres"])
+                    except (KeyError, ValueError):
+                        continue
+                    duration = (end - start).total_seconds()
+                    if duration <= 0:
+                        continue
+                    batch.append((row["id"], idx, start, duration, metres))
+            if batch:
+                cur.executemany(
+                    """INSERT INTO laps (workout_id, idx, started_at, duration_s, distance_m)
+                       VALUES (%s,%s,%s,%s,%s)
+                       ON CONFLICT (workout_id, idx) DO UPDATE SET
+                           started_at = excluded.started_at,
+                           duration_s = excluded.duration_s,
+                           distance_m = excluded.distance_m""",
+                    batch,
+                )
+                loaded += len(batch)
+                print(f"  swept {path.name}: +{len(batch)} lengths")
     return loaded
 
 
@@ -308,7 +405,9 @@ def main(argv: list[str] | None = None) -> int:
                 store.commit()
             print(f"Applied {path.name}")
             print("  +{workouts} workouts (-{deleted_workouts}) +{records} records "
-                  "{daily} metric-days {routes} routes +{hr_samples} hr samples".format(**counts))
+                  "{daily} metric-days {routes} routes +{hr_samples} hr samples"
+                  .format(**counts)
+                  + (f" +{counts['lengths']} lengths" if counts.get("lengths") else ""))
 
         swept = sweep_orphan_series(store, args.inbox)
         if not args.dry_run and swept:

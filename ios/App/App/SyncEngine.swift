@@ -68,7 +68,14 @@ final class SyncEngine {
                 sidecars.append((name: name, content: csv))
                 hrFile = name
             }
-            delta.workouts.added.append(Self.makeWorkout(w, routeFile: routeFile, hrFile: hrFile))
+            var swimFile: String? = nil
+            if let csv = try? await swimLengthsCSV(for: w), !csv.isEmpty {
+                let name = "swim-\(w.uuid.uuidString).csv"
+                sidecars.append((name: name, content: csv))
+                swimFile = name
+            }
+            delta.workouts.added.append(Self.makeWorkout(
+                w, routeFile: routeFile, hrFile: hrFile, swimFile: swimFile))
         }
 
         // --- Sparse records ---
@@ -226,7 +233,14 @@ final class SyncEngine {
                 sidecars.append((name: name, content: csv))
                 hrFile = name
             }
-            delta.workouts.added.append(Self.makeWorkout(w, routeFile: routeFile, hrFile: hrFile))
+            var swimFile: String? = nil
+            if let csv = try? await swimLengthsCSV(for: w), !csv.isEmpty {
+                let name = "swim-\(w.uuid.uuidString).csv"
+                sidecars.append((name: name, content: csv))
+                swimFile = name
+            }
+            delta.workouts.added.append(Self.makeWorkout(
+                w, routeFile: routeFile, hrFile: hrFile, swimFile: swimFile))
         }
 
         // --- Sparse records ---
@@ -367,7 +381,72 @@ final class SyncEngine {
         return csv
     }
 
-    private static func makeWorkout(_ w: HKWorkout, routeFile: String?, hrFile: String?) -> Delta.Workout {
+    /// Per-length swim splits over the workout window, as
+    /// `start,end,metres` CSV (ISO-8601 UTC).
+    ///
+    /// HealthKit records one `distanceSwimming` sample per length, each with a
+    /// start *and* an end. That is finer than lap events: the swim time for a
+    /// length is end − start, and the rest before the next is its start minus
+    /// this end. A 200 m is any eight consecutive 25 m lengths, so a benchmark
+    /// can be read off the record instead of off the watch by hand.
+    ///
+    /// Both timestamps are emitted for exactly that reason — the HR sidecar
+    /// needs only a start, and copying its shape here would have thrown away
+    /// the durations that make this worth having.
+    ///
+    /// Returns "" for anything that is not a pool swim, which is most workouts.
+    private func swimLengthsCSV(for w: HKWorkout) async throws -> String {
+        let samples: [HKSample] = try await withCheckedThrowingContinuation { cont in
+            let q = HKSampleQuery(
+                sampleType: HKQuantityType(.distanceSwimming),
+                predicate: HKQuery.predicateForSamples(
+                    withStart: w.startDate, end: w.endDate, options: .strictStartDate),
+                limit: HKObjectQueryNoLimit,
+                sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]
+            ) { _, samples, error in
+                if let error { cont.resume(throwing: error); return }
+                cont.resume(returning: samples ?? [])
+            }
+            store.execute(q)
+        }
+        guard !samples.isEmpty else { return "" }
+        var csv = "start,end,metres\n"
+        for case let s as HKQuantitySample in samples {
+            let metres = s.quantity.doubleValue(for: .meter())
+            csv += "\(DateFormats.iso(s.startDate)),\(DateFormats.iso(s.endDate)),"
+                 + "\(String(format: "%.1f", metres))\n"
+        }
+        return csv
+    }
+
+    /// One-off repair pass for `swim-<uuid>.csv`, the same shape as
+    /// `backfillHRSeries`.
+    ///
+    /// Worth running once: the samples have always been in HealthKit, and only
+    /// the export was missing, so every past swim still on this device can be
+    /// recovered rather than lost. Safe for the same reason as the HR pass —
+    /// sidecars are keyed by uuid and re-writing one cannot double-count.
+    func backfillSwimLengths() async throws -> String {
+        let workouts = try await workoutsSinceCutoff()
+        let dir = try DeltaWriter.folderURL()
+        let existing = try writer.existingFileNames()
+        var written = 0, present = 0, noLengths = 0
+        for w in workouts {
+            let name = "swim-\(w.uuid.uuidString).csv"
+            if existing.contains(name) { present += 1; continue }
+            guard let csv = try? await swimLengthsCSV(for: w), !csv.isEmpty else {
+                noLengths += 1
+                continue
+            }
+            try writer.writeSidecar(name: name, content: csv, in: dir)
+            written += 1
+        }
+        return "Swim backfill: \(written) written, \(present) already present, "
+             + "\(noLengths) without lengths."
+    }
+
+    private static func makeWorkout(_ w: HKWorkout, routeFile: String?, hrFile: String?,
+                                    swimFile: String?) -> Delta.Workout {
         let hr = w.statistics(for: HKQuantityType(.heartRate))
         let hrUnit = HKUnit.count().unitDivided(by: .minute())
         let energy = w.statistics(for: HKQuantityType(.activeEnergyBurned))?
@@ -388,7 +467,8 @@ final class SyncEngine {
             source: w.sourceRevision.source.name,
             indoor: indoorMeta.map { $0 ? 1 : 0 },
             route_file: routeFile,
-            hr_file: hrFile
+            hr_file: hrFile,
+            swim_file: swimFile
         )
     }
 
