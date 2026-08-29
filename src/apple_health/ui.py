@@ -8,6 +8,7 @@ function here is a pure function of already-fetched rows.
 from __future__ import annotations
 
 import html
+import math
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -229,6 +230,66 @@ def render(context: dict, sessions: list[dict], start: date, end: date) -> str:
     return TEMPLATE.read_text().replace("__BODY__", body)
 
 
+def route_section(route: dict | None) -> str:
+    """The track and its elevation profile, drawn inline.
+
+    SVG rather than a tile map on purpose: a tile layer would send the
+    coordinates of every run past this house to whoever serves the tiles. The
+    shape of the route is what a training review needs, and the shape costs
+    nothing to draw and leaks nothing.
+    """
+    if not route or len(route.get("points") or []) < 2:
+        return ""
+
+    pts = route["points"]
+    b = route["bounds"]
+    lat_span = max(b["max_lat"] - b["min_lat"], 1e-6)
+    lon_span = max(b["max_lon"] - b["min_lon"], 1e-6)
+    # Longitude degrees shrink with latitude; without the cosine a Tokyo ride
+    # comes out stretched by about a fifth east-to-west.
+    mid_lat = math.radians((b["max_lat"] + b["min_lat"]) / 2)
+    lon_span_m = lon_span * math.cos(mid_lat)
+    scale = max(lat_span, lon_span_m)
+    W = H = 100.0
+    coords = " ".join(
+        f"{(lon - b['min_lon']) * math.cos(mid_lat) / scale * W + (W - lon_span_m / scale * W) / 2:.2f},"
+        # y is flipped: SVG counts downwards, latitude upwards.
+        f"{H - ((lat - b['min_lat']) / scale * H + (H - lat_span / scale * H) / 2):.2f}"
+        for lat, lon in pts)
+    map_svg = (
+        f'<svg viewBox="0 0 {W:.0f} {H:.0f}" class="route" '
+        f'preserveAspectRatio="xMidYMid meet" role="img" aria-label="parcours">'
+        f'<polyline points="{coords}" fill="none" stroke="currentColor" '
+        f'stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>'
+        f'<circle cx="{coords.split()[0].split(",")[0]}" '
+        f'cy="{coords.split()[0].split(",")[1]}" r="1.8" fill="currentColor"/>'
+        f"</svg>")
+
+    profile = ""
+    eles = route.get("elevation") or []
+    lo, hi = route.get("ele_min"), route.get("ele_max")
+    if lo is not None and hi is not None and hi - lo > 1:
+        span = hi - lo
+        n = len(eles)
+        pairs = [(i / max(n - 1, 1) * 100.0, 30.0 - ((e - lo) / span * 28.0))
+                 for i, e in enumerate(eles) if e is not None]
+        if len(pairs) > 1:
+            line = " ".join(f"{x:.2f},{y:.2f}" for x, y in pairs)
+            area = f"0,30 {line} 100,30"
+            profile = (
+                f'<svg viewBox="0 0 100 30" class="profile" '
+                f'preserveAspectRatio="none" role="img" aria-label="profil">'
+                f'<polygon points="{area}" fill="currentColor" opacity="0.18"/>'
+                f'<polyline points="{line}" fill="none" stroke="currentColor" '
+                f'stroke-width="0.6"/></svg>'
+                f'<p class="note">{lo:.0f}–{hi:.0f} m — profil échantillonné '
+                f"sur {len(pairs)} points.</p>")
+
+    return (f"<h2>Parcours</h2><div class=\"card\">{map_svg}{profile}"
+            f'<p class="note">Tracé dessiné localement — aucune tuile, aucune '
+            f"coordonnée ne quitte le réseau.</p></div>")
+
+
 def render_session(detail: dict) -> str:
     """One session in full — the zone data the store holds and the page hid.
 
@@ -256,6 +317,24 @@ def render_session(detail: dict) -> str:
         f'data-arg-workout_id="{int(s["id"])}">'
         + ("Réanalyser" if review else "Analyser cette séance") +
         '</button> <span data-status></span></div>')
+
+    # Conditions the watch recorded. Shown only when present: a blank means the
+    # watch did not record it, and a printed 0 °C would read as a cold morning.
+    conditions = " · ".join(x for x in (
+        f"{s['weather_temp_c']:.0f} °C" if s.get("weather_temp_c") is not None else "",
+        f"{s['weather_humidity_pct']:.0f} % hum."
+        if s.get("weather_humidity_pct") is not None else "",
+        f"D+ {s['elevation_ascended_m']:.0f} m"
+        if s.get("elevation_ascended_m") is not None else "",
+        f"D− {s['elevation_descended_m']:.0f} m"
+        if s.get("elevation_descended_m") is not None else "",
+        f"{s['avg_mets']:.1f} MET" if s.get("avg_mets") is not None else "",
+        f"bassin {s['pool_length_m']:.0f} m"
+        if s.get("pool_length_m") is not None else "",
+        str(s.get("swim_location") or "").replace(
+            "HKWorkoutSwimmingLocationType", ""),
+    ) if x)
+
     stats = " · ".join(x for x in (
         _num(s.get("distance_km"), 2, " km") if s.get("distance_km") else "",
         _num(s.get("duration_min"), 0, " min") if s.get("duration_min") else "",
@@ -301,7 +380,9 @@ def render_session(detail: dict) -> str:
         f'<h1>{_esc(s["date"])} — {_esc(s["activity"])}</h1>'
         f'<p class="cov">{_esc(stats)} · started {_esc(s["started_at"][11:16])} '
         f'{_esc(s.get("tz") or "")}</p>'
-        + coverage_line(detail["coverage"]) + review_section + hr_html + laps_html
+        + (f'<p class="cov">{_esc(conditions)}</p>' if conditions else "")
+        + coverage_line(detail["coverage"]) + review_section
+        + route_section(detail.get("route")) + hr_html + laps_html
         + f'<h2>Note</h2><div class="card" data-card>'
         f'<input type="hidden" data-field="workout_id" value="{s["id"]}">'
         f'<textarea data-field="note" placeholder="how it went, what changed, '

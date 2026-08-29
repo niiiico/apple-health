@@ -275,6 +275,63 @@ _MIGRATIONS: tuple[str, ...] = (
     CREATE INDEX chat_turns_recent ON chat_turns (asked_at DESC);
     CREATE INDEX chat_turns_session ON chat_turns (session_id, asked_at);
     """,
+    # 9 — everything HealthKit records about a workout that we were discarding.
+    #
+    # `route_points` is ADR-007 step 2, and the one step with a deadline: the
+    # GPX files live on the Mac's disk, and the Mac is being removed from the
+    # path. Points rather than the summary `routes` already holds, because a map
+    # and an elevation profile cannot be drawn from a bounding box.
+    #
+    # The workout columns are all things the watch already recorded and the
+    # pipeline dropped on the floor — weather on 1,323 of 2,752 archived
+    # workouts, elevation on 1,038, METs on 1,151. Nullable throughout: absent
+    # means the watch did not record it, which is not the same as zero, and a
+    # zero would read as a flat course on a still day.
+    #
+    # `workout_segments` is what makes a triathlon legible. HealthKit exposes
+    # `workoutActivities` — swim, T1, bike, T2, run — each with its own
+    # statistics; without them a race is one `SwimBikeRun` row and every per-leg
+    # figure has to be typed in by hand from the results PDF.
+    """
+    CREATE TABLE route_points (
+        route_id bigint NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
+        idx      int NOT NULL,
+        t        timestamptz,
+        lat      double precision NOT NULL,
+        lon      double precision NOT NULL,
+        ele_m    double precision,
+        PRIMARY KEY (route_id, idx)
+    );
+
+    ALTER TABLE workouts
+        ADD COLUMN weather_temp_c        double precision,
+        ADD COLUMN weather_humidity_pct  double precision,
+        ADD COLUMN elevation_ascended_m  double precision,
+        ADD COLUMN elevation_descended_m double precision,
+        ADD COLUMN avg_mets             double precision,
+        ADD COLUMN pool_length_m        double precision,
+        ADD COLUMN swim_location        text,
+        ADD COLUMN max_speed_kmh        double precision;
+
+    CREATE TABLE workout_segments (
+        workout_id bigint NOT NULL REFERENCES workouts(id) ON DELETE CASCADE,
+        idx        int NOT NULL,
+        activity   text NOT NULL,
+        started_at timestamptz NOT NULL,
+        ended_at   timestamptz,
+        stats      jsonb,
+        PRIMARY KEY (workout_id, idx)
+    );
+
+    CREATE TABLE workout_events (
+        workout_id bigint NOT NULL REFERENCES workouts(id) ON DELETE CASCADE,
+        idx        int NOT NULL,
+        kind       text NOT NULL,
+        started_at timestamptz NOT NULL,
+        ended_at   timestamptz,
+        PRIMARY KEY (workout_id, idx)
+    );
+    """,
 )
 
 

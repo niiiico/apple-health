@@ -36,6 +36,8 @@ ah-web = "apple_health.web:main"
 ah-advise = "apple_health.advisor:main"
 ah-query = "apple_health.query_cli:main"
 ah-swim = "apple_health.commands.swimsplits:main"
+ah-routes = "apple_health.commands.routepoints:main"
+ah-enrich = "apple_health.commands.enrich:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -23,6 +23,9 @@ from .derive.zones import ZONES, summarize, thirds, zone_durations
 from .sources.hr_series import StoreSeries
 from .store import Store
 
+# Points kept for the page's map and elevation profile.
+ROUTE_POINTS = 400
+
 BUCKETS = {"day": "day", "week": "week", "month": "month"}
 
 
@@ -177,6 +180,40 @@ def session_detail(store: Store, workout_id: int, tz: tzinfo | None = None) -> d
         }
 
     with store.cursor() as cur:
+        # Downsampled in SQL rather than in Python: a long ride is twenty
+        # thousand points, and a page does not need more than a few hundred to
+        # draw a recognisable line. `ntile` keeps the shape by taking one point
+        # per bucket rather than the first N, which would draw the first
+        # kilometre in detail and stop.
+        cur.execute(
+            """WITH p AS (
+                   SELECT rp.idx, rp.lat, rp.lon, rp.ele_m,
+                          ntile(%s) OVER (ORDER BY rp.idx) AS bucket
+                     FROM route_points rp
+                     JOIN routes r ON r.id = rp.route_id
+                    WHERE r.workout_id = %s)
+               SELECT DISTINCT ON (bucket) idx, lat, lon, ele_m
+                 FROM p ORDER BY bucket, idx""",
+            (ROUTE_POINTS, workout_id))
+        pts = cur.fetchall()
+        route = None
+        if pts:
+            eles = [p["ele_m"] for p in pts if p["ele_m"] is not None]
+            route = {
+                "points": [[p["lat"], p["lon"]] for p in pts],
+                "elevation": [p["ele_m"] for p in pts],
+                "bounds": {"min_lat": min(p["lat"] for p in pts),
+                           "max_lat": max(p["lat"] for p in pts),
+                           "min_lon": min(p["lon"] for p in pts),
+                           "max_lon": max(p["lon"] for p in pts)},
+                "ele_min": min(eles) if eles else None,
+                "ele_max": max(eles) if eles else None,
+                # Sampled, so this is the shape of the climb rather than its
+                # exact total; `workouts.elevation_ascended_m` is the watch's
+                # own figure and is the one to quote.
+                "sampled": True,
+            }
+
         cur.execute("SELECT review, model, created_at,"
                     " basis->>'observed_through' AS observed_through"
                     " FROM session_reviews WHERE workout_id = %s", (workout_id,))
@@ -194,9 +231,16 @@ def session_detail(store: Store, workout_id: int, tz: tzinfo | None = None) -> d
             "activity": w["activity"], "distance_km": w["distance_km"],
             "duration_min": w["duration_min"], "energy_kcal": w["energy_kcal"],
             "avg_hr": w["avg_hr"], "max_hr": w["max_hr"], "indoor": w["indoor"],
+            "weather_temp_c": w["weather_temp_c"],
+            "weather_humidity_pct": w["weather_humidity_pct"],
+            "elevation_ascended_m": w["elevation_ascended_m"],
+            "elevation_descended_m": w["elevation_descended_m"],
+            "avg_mets": w["avg_mets"], "pool_length_m": w["pool_length_m"],
+            "swim_location": w["swim_location"],
             "note": w["note"],
         },
         "hr": hr,
+        "route": route,
         "laps": [{"idx": l["idx"], "duration_s": l["duration_s"],
                   "distance_m": l["distance_m"]} for l in laps] or None,
         # The advisor's own reading of this session, if it has written one. Kept
