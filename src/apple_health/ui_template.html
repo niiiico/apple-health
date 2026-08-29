@@ -18,6 +18,10 @@
   h1 { font-size:1.3rem; margin:0 0 .25rem }
   h2 { font-size:1rem; margin:2rem 0 .6rem; letter-spacing:.02em;
        text-transform:uppercase; color:var(--muted) }
+  a { color:var(--accent); text-decoration-thickness:1px; text-underline-offset:2px }
+  a:hover { text-decoration-thickness:2px }
+  a.btn, a.chatrow { color:inherit; text-decoration:none }
+  a.chatrow .q { color:var(--accent) }
   .cov { font-size:.85rem; color:var(--muted); margin:0 0 1.5rem }
   .cov b { color:var(--ink); font-weight:600 }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
@@ -118,7 +122,13 @@ document.addEventListener("click", async (e) => {
   if (b.dataset.action === "chat") {
     const chat = b.closest("[data-chat]");
     const box = chat.querySelector("[data-field=message]");
-    const transcript = chat.querySelector("[data-transcript]");
+    // On the full-screen chat page the transcript is a sibling of the card, not
+    // a child, so scoping the lookup to the card found nothing and every send
+    // died on a null — silently, which is why the button appeared to do
+    // nothing at all.
+    const transcript = chat.querySelector("[data-transcript]")
+                    || document.querySelector("[data-transcript]");
+    if (!transcript) { status.textContent = "transcript introuvable"; b.disabled = false; return; }
     const asked = (box.value || "").trim();
     if (!asked) { status.textContent = "…?"; b.disabled = false; return; }
     payload.session_id = chat.dataset.session || null;

@@ -285,12 +285,19 @@ def chat(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
         cur.execute(
             """INSERT INTO chat_turns (session_id, question, answer, queries, model)
                VALUES (%s,%s,%s,%s,%s)""",
-            (run.session_id or "unknown", message, run.text,
+            # Stored under the id the conversation already had, not the one
+            # the CLI just minted. A resume that failed because the pod
+            # restarted starts a fresh CLI session, and keying the turn on that
+            # would split one conversation into two rows in the list — the
+            # thread would appear to fork every time we deploy.
+            (session_id or run.session_id or "unknown", message, run.text,
              json.dumps(queries), advisor.MODEL))
     store.commit()
 
-    return {"message": "", "reply": run.text, "session_id": run.session_id,
-            "queries": queries}
+    # The client keeps threading on the conversation's own id for the same
+    # reason; the CLI's is an implementation detail that changes under it.
+    return {"message": "", "reply": run.text,
+            "session_id": session_id or run.session_id, "queries": queries}
 
 
 ACTIONS: dict[str, Callable[[Store, dict[str, Any]], dict[str, Any]]] = {

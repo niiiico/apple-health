@@ -360,7 +360,9 @@ def test_a_chat_turn_threads_the_conversation(monkeypatch):
     # because the pod restarted can rebuild the conversation instead of
     # telling someone their chat is gone while it is on the screen.
     assert seen["history"] == [{"question": "et hier ?", "answer": "bien"}]
-    assert out["reply"] == "ça tient." and out["session_id"] == "sess-2"
+    # The conversation's own id, not the CLI's — see
+    # test_a_rebuilt_thread_keeps_its_original_id.
+    assert out["reply"] == "ça tient." and out["session_id"] == "sess-1"
     assert out["queries"] == ["session"]
 
 
@@ -517,3 +519,20 @@ def test_an_edited_turn_does_not_resume_the_old_session(monkeypatch):
 def test_editing_an_unknown_turn_is_refused():
     with pytest.raises(ValueError, match="no turn"):
         web.retry_turn(_Store([None]), {"turn_id": 999, "message": "x"})
+
+
+def test_a_rebuilt_thread_keeps_its_original_id(monkeypatch):
+    """A failed resume starts a fresh CLI session; the conversation is the same.
+
+    Keying the stored turn on the CLI's new id would split one thread into two
+    rows in the list — it would appear to fork on every deploy, which is exactly
+    when resumes fail.
+    """
+    from apple_health.advisor import Run
+    monkeypatch.setattr("apple_health.advisor.chat",
+                        lambda *a, **k: Run("suite", [], session_id="cli-new"))
+    store = _Store([[{"question": "avant", "answer": "ok"}]])
+    out = web.chat(store, {"message": "et après ?", "session_id": "thread-1"})
+    _sql, params = store.cur.executed[-1]
+    assert params[0] == "thread-1"
+    assert out["session_id"] == "thread-1"
