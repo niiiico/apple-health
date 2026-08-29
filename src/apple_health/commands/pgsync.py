@@ -209,6 +209,90 @@ def _merge_hr_series(cur, section: dict, inbox: Path) -> int:
     return samples
 
 
+_META = ("weather_temp_c", "weather_humidity_pct", "elevation_ascended_m",
+         "elevation_descended_m", "avg_mets", "pool_length_m", "swim_location",
+         "max_speed_kmh")
+
+
+def _merge_conditions(cur, section: dict) -> int:
+    """Fill weather, elevation and the rest onto the workout row.
+
+    Applied whether or not the workout was just inserted: one already present
+    from the full export has a row but none of these columns, and this is the
+    only path that ever fills them for a synced workout.
+
+    COALESCE keeps whatever is already stored. A delta replayed after a
+    backfill must not overwrite a value with the null it happens to carry.
+    """
+    filled = 0
+    sets = ", ".join(f"{f} = COALESCE({f}, %s)" for f in _META)
+    for w in section.get("added", []):
+        if not w.get("uuid") or all(w.get(f) is None for f in _META):
+            continue
+        cur.execute(f"UPDATE workouts SET {sets} WHERE uuid = %s",
+                    tuple(w.get(f) for f in _META) + (w["uuid"],))
+        filled += cur.rowcount
+    return filled
+
+
+def _merge_segments(cur, section: dict) -> int:
+    """Multi-sport legs into `workout_segments`.
+
+    This is what makes a triathlon legible: swim / T1 / bike / T2 / run, each
+    with its own window and statistics, instead of one SwimBikeRun row whose
+    per-leg figures have to be typed in from a results PDF.
+    """
+    n = 0
+    for w in section.get("added", []):
+        segments = w.get("segments") or []
+        if not segments or not w.get("uuid"):
+            continue
+        cur.execute("SELECT id FROM workouts WHERE uuid = %s", (w["uuid"],))
+        row = cur.fetchone()
+        if not row:
+            continue
+        cur.executemany(
+            """INSERT INTO workout_segments
+                   (workout_id, idx, activity, started_at, ended_at, stats)
+               VALUES (%s,%s,%s,%s,%s,%s)
+               ON CONFLICT (workout_id, idx) DO UPDATE SET
+                   activity = excluded.activity,
+                   started_at = excluded.started_at,
+                   ended_at = excluded.ended_at,
+                   stats = excluded.stats""",
+            [(row["id"], s["idx"], s["activity"], _parse_ts(s["start"]),
+              _parse_ts(s["end"]) if s.get("end") else None,
+              json.dumps(s.get("stats") or {}))
+             for s in segments])
+        n += len(segments)
+    return n
+
+
+def _merge_events(cur, section: dict) -> int:
+    """Laps, segments, pauses and resumes as the watch marked them."""
+    n = 0
+    for w in section.get("added", []):
+        events = w.get("events") or []
+        if not events or not w.get("uuid"):
+            continue
+        cur.execute("SELECT id FROM workouts WHERE uuid = %s", (w["uuid"],))
+        row = cur.fetchone()
+        if not row:
+            continue
+        cur.executemany(
+            """INSERT INTO workout_events
+                   (workout_id, idx, kind, started_at, ended_at)
+               VALUES (%s,%s,%s,%s,%s)
+               ON CONFLICT (workout_id, idx) DO UPDATE SET
+                   kind = excluded.kind, started_at = excluded.started_at,
+                   ended_at = excluded.ended_at""",
+            [(row["id"], e["idx"], e["kind"], _parse_ts(e["start"]),
+              _parse_ts(e["end"]) if e.get("end") else None)
+             for e in events])
+        n += len(events)
+    return n
+
+
 def _merge_swim_lengths(cur, inbox: Path, section: dict) -> int:
     """Load `swim-<uuid>.csv` sidecars into `laps`, one row per length.
 
@@ -280,6 +364,9 @@ def apply_delta(store: Store, path: Path) -> dict[str, int]:
         n_routes = _merge_routes(cur, workouts, path.parent)
         n_hr = _merge_hr_series(cur, workouts, path.parent)
         n_lengths = _merge_swim_lengths(cur, path.parent, workouts)
+        n_cond = _merge_conditions(cur, workouts)
+        n_seg = _merge_segments(cur, workouts)
+        n_ev = _merge_events(cur, workouts)
         observed = _observed_through(path.parent, path.name)
         if observed is None:
             raise ValueError(f"{path.name}: no generated_at and an unparseable name; "
@@ -292,7 +379,8 @@ def apply_delta(store: Store, path: Path) -> dict[str, int]:
         )
     return {"workouts": w_ins, "deleted_workouts": w_del, "records": n_rec,
             "daily": n_daily, "routes": n_routes, "hr_samples": n_hr,
-            "lengths": n_lengths}
+            "lengths": n_lengths, "conditions": n_cond,
+            "segments": n_seg, "events": n_ev}
 
 
 def sweep_orphan_series(store: Store, inbox: Path) -> int:
@@ -407,7 +495,10 @@ def main(argv: list[str] | None = None) -> int:
             print("  +{workouts} workouts (-{deleted_workouts}) +{records} records "
                   "{daily} metric-days {routes} routes +{hr_samples} hr samples"
                   .format(**counts)
-                  + (f" +{counts['lengths']} lengths" if counts.get("lengths") else ""))
+                  + (f" +{counts['lengths']} lengths" if counts.get("lengths") else "")
+                  + (f" +{counts['conditions']} conditions" if counts.get("conditions") else "")
+                  + (f" +{counts['segments']} segments" if counts.get("segments") else "")
+                  + (f" +{counts['events']} events" if counts.get("events") else ""))
 
         swept = sweep_orphan_series(store, args.inbox)
         if not args.dry_run and swept:

@@ -61,6 +61,46 @@ struct Delta: Codable {
         // Per-length swim splits, `swim-<uuid>.csv`. Absent for every activity
         // but swimming, and for swims recorded before this field existed.
         let swim_file: String?
+
+        // What the watch recorded about the conditions and the effort. All
+        // optional: absent means the watch did not record it, which is a
+        // different fact from zero — a nil temperature is an unknown morning,
+        // a 0.0 is a freezing one.
+        let weather_temp_c: Double?
+        let weather_humidity_pct: Double?
+        let elevation_ascended_m: Double?
+        let elevation_descended_m: Double?
+        let avg_mets: Double?
+        let pool_length_m: Double?
+        let swim_location: String?
+        let max_speed_kmh: Double?
+
+        // Multi-sport legs. A triathlon arrives as one SwimBikeRun workout and
+        // these are its swim / T1 / bike / T2 / run, each with its own window
+        // and statistics. Empty for an ordinary single-sport workout.
+        let segments: [Segment]?
+
+        // Laps, segments, pauses and resumes as the watch marked them.
+        let events: [Event]?
+    }
+
+    struct Segment: Codable {
+        let idx: Int
+        let activity: String
+        let start: String
+        let end: String?
+        /// Every quantity the leg recorded, as `type: {sum,avg,min,max}`.
+        /// Free-form rather than a fixed set: which types a leg carries depends
+        /// on the sport, and naming them here would silently drop the rest.
+        let stats: [String: [String: Double]]?
+    }
+
+    struct Event: Codable {
+        let idx: Int
+        /// lap, segment, pause, resume, marker, motionPaused, motionResumed.
+        let kind: String
+        let start: String
+        let end: String?
     }
 
     struct Record: Codable {

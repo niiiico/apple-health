@@ -105,7 +105,40 @@ silently.
         "indoor": 0,                          // 1 indoor, 0 outdoor, null unknown
         "route_file": "route-5C3A….gpx",      // null if the workout has no route
         "hr_file": "hr-5C3A….csv",            // null if no HR samples (added 2026-07-11; older deltas lack it)
-        "swim_file": "swim-5C3A….csv"         // null unless a pool swim (added 2026-08-28; older deltas lack it)
+        "swim_file": "swim-5C3A….csv",        // null unless a pool swim (added 2026-08-28; older deltas lack it)
+
+        // Conditions and effort the watch recorded (added 2026-08-29). All
+        // nullable: absent means the watch did not record it, which is not the
+        // same as zero — a null temperature is an unknown morning, 0.0 a
+        // freezing one. Units are fixed here and converted on the device, since
+        // HealthKit writes weather in the locale unit, elevation in centimetres
+        // and humidity as a fraction, and no key name says so.
+        "weather_temp_c": 24.4,               // °C
+        "weather_humidity_pct": 66.0,         // 0–100
+        "elevation_ascended_m": 143.0,
+        "elevation_descended_m": null,
+        "avg_mets": 8.2,                      // kcal/kg·h
+        "pool_length_m": 25.0,                // null outside a pool
+        "swim_location": "pool",              // "pool" | "openWater" | null
+        "max_speed_kmh": null,
+
+        // Multi-sport legs (added 2026-08-29). A triathlon arrives as one
+        // SwimBikeRun workout; these are its legs. Null for single-sport.
+        "segments": [
+          {"idx": 1, "activity": "Swimming",
+           "start": "2026-06-28 09:05:00 +0900", "end": "2026-06-28 09:37:17 +0900",
+           // Free-form: which quantities a leg carries depends on the sport, so
+           // naming a fixed set here would silently drop the rest. Each entry is
+           // in that type's canonical unit; a type whose unit is unknown to the
+           // producer is omitted rather than sent in a guessed one.
+           "stats": {"HeartRate": {"avg": 148.2, "min": 96, "max": 171}}}
+        ],
+
+        // Laps, segments, pauses and resumes as the watch marked them
+        // (added 2026-08-29). Null when the watch marked none.
+        "events": [
+          {"idx": 1, "kind": "lap", "start": "2026-06-28 09:37:17 +0900", "end": null}
+        ]
       }
     ],
     "deleted": ["<uuid>", "…"]                // workouts removed on device since last anchor

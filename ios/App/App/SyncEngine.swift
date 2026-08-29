@@ -445,6 +445,81 @@ final class SyncEngine {
              + "\(noLengths) without lengths."
     }
 
+    /// A metadata number in the unit we store, or nil.
+    ///
+    /// Read through `HKQuantity` rather than off the raw value: HealthKit
+    /// writes weather in the device's locale unit, elevation in centimetres and
+    /// humidity as a percentage times one hundred, and none of the key names
+    /// say so. Asking the quantity for a unit converts; reading `.doubleValue`
+    /// and hoping does not.
+    private static func metaQuantity(_ w: HKWorkout, _ key: String,
+                                     _ unit: HKUnit) -> Double? {
+        guard let q = w.metadata?[key] as? HKQuantity, q.is(compatibleWith: unit)
+        else { return nil }
+        return q.doubleValue(for: unit)
+    }
+
+    private static func statsDict(_ all: [HKQuantityType: HKStatistics]) -> [String: [String: Double]] {
+        var out: [String: [String: Double]] = [:]
+        for (type, stats) in all {
+            // The type's own canonical unit, so a consumer never has to guess
+            // which one a number is in. Distance and energy are cumulative;
+            // rates are averaged.
+            let unit: HKUnit
+            switch type.identifier {
+            case HKQuantityTypeIdentifier.heartRate.rawValue,
+                 HKQuantityTypeIdentifier.respiratoryRate.rawValue:
+                unit = HKUnit.count().unitDivided(by: .minute())
+            case HKQuantityTypeIdentifier.activeEnergyBurned.rawValue,
+                 HKQuantityTypeIdentifier.basalEnergyBurned.rawValue:
+                unit = .kilocalorie()
+            case HKQuantityTypeIdentifier.runningPower.rawValue,
+                 HKQuantityTypeIdentifier.cyclingPower.rawValue:
+                unit = .watt()
+            case HKQuantityTypeIdentifier.cyclingCadence.rawValue:
+                unit = HKUnit.count().unitDivided(by: .minute())
+            case let id where id.hasPrefix("HKQuantityTypeIdentifierDistance"):
+                unit = .meter()
+            case HKQuantityTypeIdentifier.runningSpeed.rawValue,
+                 HKQuantityTypeIdentifier.cyclingSpeed.rawValue,
+                 HKQuantityTypeIdentifier.walkingSpeed.rawValue:
+                unit = HKUnit.meterUnit(with: .kilo).unitDivided(by: .hour())
+            case HKQuantityTypeIdentifier.runningStrideLength.rawValue,
+                 HKQuantityTypeIdentifier.runningVerticalOscillation.rawValue:
+                unit = .meter()
+            case HKQuantityTypeIdentifier.runningGroundContactTime.rawValue:
+                unit = .secondUnit(with: .milli)
+            default:
+                continue        // unknown unit is worse than no number at all
+            }
+            var entry: [String: Double] = [:]
+            if let v = stats.sumQuantity()?.doubleValue(for: unit) { entry["sum"] = v }
+            if let v = stats.averageQuantity()?.doubleValue(for: unit) { entry["avg"] = v }
+            if let v = stats.minimumQuantity()?.doubleValue(for: unit) { entry["min"] = v }
+            if let v = stats.maximumQuantity()?.doubleValue(for: unit) { entry["max"] = v }
+            if !entry.isEmpty {
+                entry["_unit_is_canonical"] = 1
+                out[type.identifier.replacingOccurrences(
+                    of: "HKQuantityTypeIdentifier", with: "")] = entry
+            }
+        }
+        return out
+    }
+
+    private static func eventKind(_ t: HKWorkoutEventType) -> String {
+        switch t {
+        case .pause: return "pause"
+        case .resume: return "resume"
+        case .lap: return "lap"
+        case .marker: return "marker"
+        case .motionPaused: return "motionPaused"
+        case .motionResumed: return "motionResumed"
+        case .segment: return "segment"
+        case .pauseOrResumeRequest: return "pauseOrResumeRequest"
+        @unknown default: return "unknown"
+        }
+    }
+
     private static func makeWorkout(_ w: HKWorkout, routeFile: String?, hrFile: String?,
                                     swimFile: String?) -> Delta.Workout {
         let hr = w.statistics(for: HKQuantityType(.heartRate))
@@ -468,7 +543,40 @@ final class SyncEngine {
             indoor: indoorMeta.map { $0 ? 1 : 0 },
             route_file: routeFile,
             hr_file: hrFile,
-            swim_file: swimFile
+            swim_file: swimFile,
+            weather_temp_c: metaQuantity(w, HKMetadataKeyWeatherTemperature, .degreeCelsius()),
+            weather_humidity_pct: metaQuantity(w, HKMetadataKeyWeatherHumidity, .percent())
+                .map { $0 * 100 },      // HKUnit.percent() is a fraction
+            elevation_ascended_m: metaQuantity(w, HKMetadataKeyElevationAscended, .meter()),
+            elevation_descended_m: metaQuantity(w, HKMetadataKeyElevationDescended, .meter()),
+            avg_mets: metaQuantity(w, HKMetadataKeyAverageMETs,
+                                   HKUnit.kilocalorie()
+                                       .unitDivided(by: HKUnit.gramUnit(with: .kilo)
+                                           .unitMultiplied(by: .hour()))),
+            pool_length_m: metaQuantity(w, HKMetadataKeyLapLength, .meter()),
+            swim_location: (w.metadata?[HKMetadataKeySwimmingLocationType] as? NSNumber)
+                .map { $0.intValue == 1 ? "openWater" : "pool" },
+            max_speed_kmh: metaQuantity(
+                w, HKMetadataKeyMaximumSpeed,
+                HKUnit.meterUnit(with: .kilo).unitDivided(by: .hour())),
+            segments: w.workoutActivities.isEmpty ? nil :
+                w.workoutActivities.enumerated().map { i, a in
+                    Delta.Segment(
+                        idx: i + 1,
+                        activity: Self.activityName(a.workoutConfiguration.activityType),
+                        start: DateFormats.appleDate(a.startDate),
+                        end: a.endDate.map { DateFormats.appleDate($0) },
+                        stats: Self.statsDict(a.allStatistics))
+                },
+            events: (w.workoutEvents ?? []).isEmpty ? nil :
+                (w.workoutEvents ?? []).enumerated().map { i, e in
+                    Delta.Event(
+                        idx: i + 1,
+                        kind: Self.eventKind(e.type),
+                        start: DateFormats.appleDate(e.dateInterval.start),
+                        end: e.dateInterval.duration > 0
+                            ? DateFormats.appleDate(e.dateInterval.end) : nil)
+                }
         )
     }
 
