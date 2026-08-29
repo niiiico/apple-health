@@ -297,7 +297,8 @@ def chat(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
     # The client keeps threading on the conversation's own id for the same
     # reason; the CLI's is an implementation detail that changes under it.
     return {"message": "", "reply": run.text,
-            "session_id": session_id or run.session_id, "queries": queries}
+            "session_id": session_id or run.session_id, "queries": queries,
+            "steps": run.steps}
 
 
 ACTIONS: dict[str, Callable[[Store, dict[str, Any]], dict[str, Any]]] = {
@@ -377,12 +378,14 @@ def start_job(dsn: str | None, name: str, payload: dict[str, Any]) -> str:
         _JOBS[job_id] = {"state": "running", "action": name,
                          "started_at": time.time()}
 
-    def note_progress(text: str, queries: list[str]) -> None:
+    def note_progress(text: str, queries: list[str],
+                      steps: list[dict[str, str]] | None = None) -> None:
         with _JOBS_LOCK:
             job = _JOBS.get(job_id)
             if job and job.get("state") == "running":
                 job["partial"] = text
                 job["queries"] = queries
+                job["steps"] = steps or []
 
     def run() -> None:
         # Its own Store: a psycopg connection belongs to one thread, and sharing
@@ -435,7 +438,8 @@ def job_state(job_id: str) -> dict[str, Any]:
         return {"state": "running",
                 "elapsed": round(time.time() - job["started_at"]),
                 "partial": job.get("partial") or "",
-                "queries": job.get("queries") or []}
+                "queries": job.get("queries") or [],
+                "steps": job.get("steps") or []}
     return job
 
 

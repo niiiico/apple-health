@@ -312,6 +312,7 @@ class Run:
     cost_usd: float | None = None
     turns: int | None = None
     session_id: str | None = None
+    steps: list[dict[str, str]] = field(default_factory=list)
 
     def basis(self, store: Store) -> dict[str, Any]:
         """What the opinion was formed from, for storing beside it.
@@ -372,6 +373,11 @@ def run_streaming(task: str, timeout: float = 900.0, resume: str | None = None,
 
         text_parts: list[str] = []
         queries: list[str] = []
+        # A readable trace of what it is doing, not just which tools fired. Each
+        # Bash call carries the model's own one-line description of its intent
+        # alongside the command, which is the most informative thing the stream
+        # offers — thinking blocks are not emitted at all.
+        steps: list[dict[str, str]] = []
         envelope: dict[str, Any] | None = None
         session_id: str | None = None
         deadline = time.monotonic() + timeout
@@ -390,14 +396,28 @@ def run_streaming(task: str, timeout: float = 900.0, resume: str | None = None,
                     session_id = event["session_id"]
                 elif kind == "assistant":
                     for block in (event.get("message") or {}).get("content") or []:
-                        if block.get("type") == "text" and block.get("text"):
+                        btype = block.get("type")
+                        if btype == "text" and block.get("text"):
                             text_parts.append(block["text"])
-                        elif block.get("type") == "tool_use":
-                            cmd = (block.get("input") or {}).get("command", "")
+                            steps.append({"kind": "text", "text": block["text"]})
+                        elif btype == "thinking" and block.get("thinking"):
+                            # Not emitted today, but costs nothing to carry and
+                            # means this keeps working if that changes.
+                            steps.append({"kind": "thinking",
+                                          "text": block["thinking"]})
+                        elif btype == "tool_use":
+                            args = block.get("input") or {}
+                            cmd = args.get("command", "")
                             queries.append(cmd.split()[1] if len(cmd.split()) > 1
                                            else block.get("name", "?"))
+                            steps.append({
+                                "kind": "tool",
+                                "text": args.get("description") or block.get("name", "?"),
+                                "detail": cmd,
+                            })
                     if on_progress:
-                        on_progress("\n\n".join(text_parts), list(queries))
+                        on_progress("\n\n".join(text_parts), list(queries),
+                                    list(steps))
                 elif kind == "result":
                     envelope = event
                     session_id = event.get("session_id") or session_id
@@ -425,7 +445,7 @@ def run_streaming(task: str, timeout: float = 900.0, resume: str | None = None,
                output_tokens=usage.get("output_tokens", 0),
                cost_usd=envelope.get("total_cost_usd"),
                turns=envelope.get("num_turns"),
-               session_id=session_id)
+               session_id=session_id, steps=steps)
 
 
 def run_claude(task: str, timeout: float = 900.0, resume: str | None = None) -> Run:
