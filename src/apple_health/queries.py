@@ -435,3 +435,29 @@ def chat_history(store: Store, limit: int = 40,
             for r in rows
         ],
     }
+
+
+def chat_sessions(store: Store, limit: int = 60) -> dict:
+    """One row per conversation, newest first.
+
+    Grouped in SQL rather than in Python so the list stays cheap as the history
+    grows: only the first question and the counts are needed to draw it.
+    """
+    with store.cursor() as cur:
+        cur.execute(
+            """SELECT session_id,
+                      min(asked_at) AS started_at,
+                      max(asked_at) AS last_at,
+                      count(*)      AS turns,
+                      (array_agg(question ORDER BY asked_at))[1] AS first_question
+                 FROM chat_turns
+             GROUP BY session_id
+             ORDER BY max(asked_at) DESC
+                LIMIT %s""", (limit,))
+        return {"sessions": [
+            {"session_id": r["session_id"],
+             "started_at": r["started_at"].isoformat(),
+             "last_at": r["last_at"].isoformat(),
+             "turns": r["turns"],
+             "first_question": r["first_question"]}
+            for r in cur.fetchall()]}

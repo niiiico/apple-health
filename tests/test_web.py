@@ -33,6 +33,9 @@ class _Cur:
     def fetchone(self):
         return self.answers.pop(0) if self.answers else None
 
+    def fetchall(self):
+        return self.answers.pop(0) if self.answers else []
+
     def __enter__(self):
         return self
 
@@ -344,13 +347,19 @@ def test_a_chat_turn_threads_the_conversation(monkeypatch):
 
     def _chat(message, session_id=None, **kw):
         seen["message"], seen["session"] = message, session_id
+        seen["history"] = kw.get("history")
         from apple_health.advisor import Run
         return Run("ça tient.", [{"query": "session", "args": {"id": 1}}],
                    session_id="sess-2")
 
     monkeypatch.setattr("apple_health.advisor.chat", _chat)
-    out = web.chat(_Store(), {"message": "et mardi ?", "session_id": "sess-1"})
-    assert seen == {"message": "et mardi ?", "session": "sess-1"}
+    store = _Store([[{"question": "et hier ?", "answer": "bien"}]])
+    out = web.chat(store, {"message": "et mardi ?", "session_id": "sess-1"})
+    assert seen["message"] == "et mardi ?" and seen["session"] == "sess-1"
+    # The stored transcript travels with the turn, so a resume that fails
+    # because the pod restarted can rebuild the conversation instead of
+    # telling someone their chat is gone while it is on the screen.
+    assert seen["history"] == [{"question": "et hier ?", "answer": "bien"}]
     assert out["reply"] == "ça tient." and out["session_id"] == "sess-2"
     assert out["queries"] == ["session"]
 

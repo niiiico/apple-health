@@ -207,7 +207,19 @@ def chat(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
     if len(message) > 4000:
         raise ValueError("message is too long")
 
-    run = advisor.chat(message, payload.get("session_id") or None)
+    session_id = payload.get("session_id") or None
+    history = None
+    if session_id:
+        with store.cursor() as cur:
+            cur.execute(
+                """SELECT question, answer FROM chat_turns
+                    WHERE session_id = %s ORDER BY asked_at""", (session_id,))
+            history = [dict(r) for r in cur.fetchall()]
+
+    # Reported as it arrives, so a two-minute answer is visibly forming rather
+    # than a spinner that says nothing about whether anything is happening.
+    progress = payload.get("_progress")
+    run = advisor.chat(message, session_id, on_progress=progress, history=history)
     queries = [c.get("query") for c in run.calls]
 
     # Stored after the answer exists, never before: a question with no answer is
@@ -302,6 +314,13 @@ def start_job(dsn: str | None, name: str, payload: dict[str, Any]) -> str:
         _JOBS[job_id] = {"state": "running", "action": name,
                          "started_at": time.time()}
 
+    def note_progress(text: str, queries: list[str]) -> None:
+        with _JOBS_LOCK:
+            job = _JOBS.get(job_id)
+            if job and job.get("state") == "running":
+                job["partial"] = text
+                job["queries"] = queries
+
     def run() -> None:
         # Its own Store: a psycopg connection belongs to one thread, and sharing
         # the request's would corrupt both.
@@ -310,7 +329,9 @@ def start_job(dsn: str | None, name: str, payload: dict[str, Any]) -> str:
             "state": "failed", "error": "le job s'est arrêté sans rien dire"}
         try:
             store = Store(dsn)
-            outcome = {"state": "done", "result": ACTIONS[name](store, payload)}
+            outcome = {"state": "done",
+                       "result": ACTIONS[name](store, {**payload,
+                                                       "_progress": note_progress})}
         except ValueError as exc:
             outcome = {"state": "failed", "error": str(exc)}
         except Exception as exc:                 # noqa: BLE001
@@ -349,8 +370,21 @@ def job_state(job_id: str) -> dict[str, Any]:
                          "après rechargement"}
     if job["state"] == "running":
         return {"state": "running",
-                "elapsed": round(time.time() - job["started_at"])}
+                "elapsed": round(time.time() - job["started_at"]),
+                "partial": job.get("partial") or "",
+                "queries": job.get("queries") or []}
     return job
+
+
+def render_chats_page(store: Store) -> str:
+    """The conversation list."""
+    return ui.render_chats(queries.chat_sessions(store)["sessions"])
+
+
+def render_chat_page(store: Store, session_id: str) -> str:
+    """One conversation, full screen."""
+    turns = queries.chat_history(store, session_id=session_id)["turns"]
+    return ui.render_chat(session_id, turns)
 
 
 def handler_for(dsn: str | None, window_days: int = WINDOW_DAYS):
@@ -407,7 +441,14 @@ def handler_for(dsn: str | None, window_days: int = WINDOW_DAYS):
                 return self._json(200, {"ok": True, "observed_through":
                                         observed.isoformat() if observed else None})
             parsed = urlparse(self.path)
-            if parsed.path.startswith("/session/"):
+            if parsed.path == "/chat" or parsed.path == "/chat/":
+                render = render_chats_page
+            elif parsed.path == "/chat/new":
+                render = lambda store: ui.render_chat(None, [])  # noqa: E731
+            elif parsed.path.startswith("/chat/"):
+                sid = parsed.path.removeprefix("/chat/")
+                render = lambda store: render_chat_page(store, sid)  # noqa: E731
+            elif parsed.path.startswith("/session/"):
                 try:
                     workout_id = int(parsed.path.removeprefix("/session/"))
                 except ValueError:

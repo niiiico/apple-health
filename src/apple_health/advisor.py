@@ -50,6 +50,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -270,17 +271,34 @@ Their question:
 {message}"""
 
 
-def chat(message: str, session_id: str | None = None,
-         timeout: float = 300.0) -> Run:
+def chat(message: str, session_id: str | None = None, timeout: float = 600.0,
+         on_progress: Any = None, history: list[dict] | None = None) -> Run:
     """One conversational turn, continuing `session_id` when given.
 
-    The first turn carries the full instructions; later turns carry only the
-    question, because the CLI has the earlier ones in the resumed transcript.
-    Re-sending them would pay for the same tokens every turn and, worse, let a
-    later copy quietly disagree with the first.
+    The first turn carries the full instructions; a resumed one carries only the
+    question, because the CLI already has the rest in its transcript.
+
+    **Resuming can fail, and must not be fatal.** The CLI keeps sessions under
+    its own `$HOME` inside the pod, so a restart loses every one of them while
+    the transcript survives in Postgres. Rather than tell someone their
+    conversation is gone when the words are plainly on the screen, a failed
+    resume replays the stored history as context and starts a new session.
     """
-    task = message if session_id else CHAT_TASK.format(message=message)
-    return run_claude(task, timeout=timeout, resume=session_id)
+    if session_id:
+        try:
+            return run_streaming(message, timeout=timeout, resume=session_id,
+                                 on_progress=on_progress)
+        except RuntimeError:
+            pass                      # session gone with the pod; rebuild below
+
+    task = CHAT_TASK.format(message=message)
+    if session_id and history:
+        task = (CHAT_TASK.split("Their question:")[0]
+                + "This conversation is already under way. What was said so far:\n\n"
+                + "\n\n".join(f"Them: {h['question']}\nYou: {h['answer']}"
+                                for h in history[-8:])
+                + f"\n\nTheir question:\n\n{message}")
+    return run_streaming(task, timeout=timeout, on_progress=on_progress)
 
 
 @dataclass
@@ -312,6 +330,102 @@ class Run:
             "usage": {"input": self.input_tokens, "output": self.output_tokens,
                       "cost_usd": self.cost_usd, "turns": self.turns},
         }
+
+
+def run_streaming(task: str, timeout: float = 900.0, resume: str | None = None,
+                  on_progress: Any = None) -> Run:
+    """Run the CLI in streaming mode, reporting progress as it arrives.
+
+    `--output-format stream-json` emits newline-delimited events as each
+    assistant message completes — not token by token. So what a reader sees is
+    each query being run and then the answer, which is honest progress rather
+    than a typing effect.
+
+    `on_progress(text, queries)` is called as those arrive. It is what makes a
+    two-minute answer visible while it is still being formed; the alternative is
+    a spinner that says nothing about whether anything is happening.
+    """
+    env = dict(os.environ)
+    env.pop("ANTHROPIC_API_KEY", None)
+    env[_OAUTH_VAR] = token()
+
+    with tempfile.TemporaryDirectory(prefix="ah-advise-") as work:
+        log = Path(work) / "queries.jsonl"
+        env["AH_QUERY_LOG"] = str(log)
+        argv = [CLI, "-p", task,
+                "--allowed-tools", ALLOWED_TOOLS,
+                "--output-format", "stream-json", "--verbose",
+                "--model", MODEL]
+        if resume:
+            argv += ["--resume", resume]
+
+        try:
+            proc = subprocess.Popen(argv, cwd=work, env=env,
+                                    stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, bufsize=1)
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"{CLI!r} is not installed. The advisor drives the Claude Code "
+                f"CLI; install it with: curl -fsSL https://claude.ai/install.sh | bash"
+            ) from None
+
+        text_parts: list[str] = []
+        queries: list[str] = []
+        envelope: dict[str, Any] | None = None
+        session_id: str | None = None
+        deadline = time.monotonic() + timeout
+
+        try:
+            for line in proc.stdout:
+                if time.monotonic() > deadline:
+                    proc.kill()
+                    raise RuntimeError(f"gave up after {timeout:.0f}s; nothing stored")
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                kind = event.get("type")
+                if kind == "system" and event.get("session_id"):
+                    session_id = event["session_id"]
+                elif kind == "assistant":
+                    for block in (event.get("message") or {}).get("content") or []:
+                        if block.get("type") == "text" and block.get("text"):
+                            text_parts.append(block["text"])
+                        elif block.get("type") == "tool_use":
+                            cmd = (block.get("input") or {}).get("command", "")
+                            queries.append(cmd.split()[1] if len(cmd.split()) > 1
+                                           else block.get("name", "?"))
+                    if on_progress:
+                        on_progress("\n\n".join(text_parts), list(queries))
+                elif kind == "result":
+                    envelope = event
+                    session_id = event.get("session_id") or session_id
+            proc.wait(timeout=30)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+
+        calls = _read_log(log)
+
+    if envelope is None:
+        detail = (proc.stderr.read() or "").strip()[:400] if proc.stderr else ""
+        raise RuntimeError(f"the CLI produced no result event. {detail}".strip())
+    if envelope.get("is_error"):
+        raise RuntimeError(
+            f"claude reported an error: {envelope.get('subtype') or 'unknown'}")
+
+    text = (envelope.get("result") or "\n\n".join(text_parts)).strip()
+    if not text:
+        raise RuntimeError("the model returned no text; nothing stored")
+
+    usage = envelope.get("usage") or {}
+    return Run(text, calls,
+               input_tokens=usage.get("input_tokens", 0),
+               output_tokens=usage.get("output_tokens", 0),
+               cost_usd=envelope.get("total_cost_usd"),
+               turns=envelope.get("num_turns"),
+               session_id=session_id)
 
 
 def run_claude(task: str, timeout: float = 900.0, resume: str | None = None) -> Run:

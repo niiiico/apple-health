@@ -58,6 +58,12 @@
   .turn { white-space:pre-wrap; padding:.5rem .7rem; border-radius:6px; margin:.4rem 0 }
   .turn.you { background:var(--accent-bg, rgba(127,127,127,.12)); font-weight:600 }
   .turn.claude { background:transparent }
+  .turn.live { opacity:.75 }
+  .transcript.full { max-height:none }
+  a.chatrow { display:flex; flex-direction:column; gap:.15rem; padding:.6rem .2rem;
+              border-bottom:1px solid rgba(127,127,127,.25); text-decoration:none }
+  a.chatrow:last-child { border-bottom:none }
+  a.chatrow .q { font-weight:600 }
   .doc { white-space:pre-wrap; line-height:1.5 }
   svg.route { width:100%; max-width:26rem; height:auto; display:block; margin:0 auto .6rem }
   svg.profile { width:100%; height:5rem; display:block; margin:.4rem 0 }
@@ -111,8 +117,25 @@ document.addEventListener("click", async (e) => {
     say(transcript, "you", asked);
     box.value = "";
     b.disabled = true; status.textContent = "…";
-    const r = await ask(payload, (secs) =>
-      status.textContent = secs === null ? "…" : `réflexion… ${secs}s`);
+    // A live pane, replaced each poll, showing the answer as it forms and which
+    // queries have run. Removed when the real turn is appended.
+    let live = null;
+    const r = await ask(payload, (secs, s) => {
+      if (secs === null) { status.textContent = "…"; return; }
+      const qs = (s && s.queries || []);
+      status.textContent = `réflexion… ${secs}s`
+        + (qs.length ? ` · ${qs.join(", ")}` : "");
+      const partial = s && s.partial;
+      if (!partial) return;
+      if (!live) {
+        live = document.createElement("div");
+        live.className = "turn claude live";
+        transcript.appendChild(live);
+      }
+      live.textContent = partial;
+      transcript.scrollTop = transcript.scrollHeight;
+    });
+    if (live) live.remove();
     b.disabled = false;
     if (r.error) { status.textContent = r.error; status.className = "note warn"; return; }
     status.textContent = ""; 
@@ -164,7 +187,7 @@ async function run(action, payload, onTick) {
       if (onTick) onTick(null);
       continue;
     }
-    if (s.state === "running") { if (onTick) onTick(s.elapsed); continue; }
+    if (s.state === "running") { if (onTick) onTick(s.elapsed, s); continue; }
     if (s.state === "done") return s.result || {};
     return {error: s.error || "échec"};
   }
