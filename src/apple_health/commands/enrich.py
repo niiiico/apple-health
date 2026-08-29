@@ -22,8 +22,9 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import json
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -131,6 +132,131 @@ def read_workouts(export: Path) -> list[dict[str, Any]]:
     return out
 
 
+def _stats(activity) -> dict[str, dict[str, float]]:
+    """`WorkoutStatistics` children as {type: {sum,avg,min,max}}.
+
+    The unit is kept alongside rather than converted: the export states it per
+    statistic, and a consumer that is told "ms" can act, where one handed a bare
+    number has to guess.
+    """
+    out: dict[str, dict[str, float]] = {}
+    for st in activity.findall("WorkoutStatistics"):
+        name = (st.get("type") or "").replace("HKQuantityTypeIdentifier", "")
+        if not name:
+            continue
+        entry: dict[str, float] = {}
+        for attr, key in (("sum", "sum"), ("average", "avg"),
+                          ("minimum", "min"), ("maximum", "max")):
+            raw = st.get(attr)
+            if raw is None:
+                continue
+            try:
+                entry[key] = float(raw)
+            except ValueError:
+                continue
+        if entry:
+            entry["_unit"] = st.get("unit") or ""
+            out[name] = entry
+    return out
+
+
+def read_structure(export: Path) -> list[dict[str, Any]]:
+    """Per-workout activities and events, keyed by start instant.
+
+    The archive holds 3,347 activities and 3,056 lap events that the pipeline
+    has never carried — every interval of every structured run, and the legs of
+    every triathlon.
+    """
+    out: list[dict[str, Any]] = []
+    for _ev, el in ET.iterparse(str(export), events=("end",)):
+        if el.tag != "Workout":
+            continue
+        try:
+            start = datetime.strptime(el.get("startDate"), _APPLE)
+        except (TypeError, ValueError):
+            el.clear()
+            continue
+
+        activities = []
+        for i, a in enumerate(el.findall("WorkoutActivity"), start=1):
+            try:
+                a_start = datetime.strptime(a.get("startDate"), _APPLE)
+            except (TypeError, ValueError):
+                continue
+            a_end = None
+            if a.get("endDate"):
+                try:
+                    a_end = datetime.strptime(a.get("endDate"), _APPLE)
+                except ValueError:
+                    a_end = None
+            activities.append({"idx": i, "start": a_start, "end": a_end,
+                               "stats": _stats(a)})
+
+        events = []
+        for i, e in enumerate(el.findall("WorkoutEvent"), start=1):
+            try:
+                e_start = datetime.strptime(e.get("date"), _APPLE)
+            except (TypeError, ValueError):
+                continue
+            kind = (e.get("type") or "").replace("HKWorkoutEventType", "")
+            e_end = None
+            if e.get("duration") and e.get("durationUnit") == "min":
+                try:
+                    # e.get(), not e[...]: an Element indexes its children by
+                    # position, so e["duration"] asks for child "duration".
+                    e_end = e_start + timedelta(minutes=float(e.get("duration")))
+                except (ValueError, TypeError):
+                    e_end = None
+            events.append({"idx": i, "kind": kind[:1].lower() + kind[1:],
+                           "start": e_start, "end": e_end})
+
+        if activities or events:
+            out.append({"start": start, "activities": activities, "events": events})
+        el.clear()
+    return out
+
+
+def apply_structure(store: Store, rows: list[dict[str, Any]]) -> tuple[int, int]:
+    """Attach activities and events to their workout. Returns (segments, events)."""
+    n_seg = n_ev = 0
+    with store.cursor() as cur:
+        for row in rows:
+            cur.execute("SELECT id, activity FROM workouts WHERE started_at = %s",
+                        (row["start"],))
+            w = cur.fetchone()
+            if w is None:
+                continue
+            if row["activities"]:
+                cur.executemany(
+                    """INSERT INTO workout_segments
+                           (workout_id, idx, activity, started_at, ended_at, stats)
+                       VALUES (%s,%s,%s,%s,%s,%s)
+                       ON CONFLICT (workout_id, idx) DO UPDATE SET
+                           started_at = excluded.started_at,
+                           ended_at = excluded.ended_at, stats = excluded.stats""",
+                    # The export names no activity per segment, so the workout's
+                    # own is used. For a triathlon that is wrong per leg and is
+                    # left rather than guessed: the leg boundaries are the
+                    # useful part, and inventing "Swimming" for leg one would be
+                    # a fact nobody recorded.
+                    [(w["id"], a["idx"], w["activity"], a["start"], a["end"],
+                      json.dumps(a["stats"])) for a in row["activities"]])
+                n_seg += len(row["activities"])
+            if row["events"]:
+                cur.executemany(
+                    """INSERT INTO workout_events
+                           (workout_id, idx, kind, started_at, ended_at)
+                       VALUES (%s,%s,%s,%s,%s)
+                       ON CONFLICT (workout_id, idx) DO UPDATE SET
+                           kind = excluded.kind, started_at = excluded.started_at,
+                           ended_at = excluded.ended_at""",
+                    [(w["id"], e["idx"], e["kind"], e["start"], e["end"])
+                     for e in row["events"]])
+                n_ev += len(row["events"])
+    store.commit()
+    return n_seg, n_ev
+
+
 FIELDS = ("weather_temp_c", "weather_humidity_pct", "elevation_ascended_m",
           "elevation_descended_m", "avg_mets", "pool_length_m",
           "swim_location", "max_speed_kmh")
@@ -182,6 +308,13 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         store.close()
     print(f"enriched {updated:,} workouts; {unmatched:,} had no matching row")
+
+    store = Store(None)
+    try:
+        n_seg, n_ev = apply_structure(store, read_structure(args.export))
+    finally:
+        store.close()
+    print(f"attached {n_seg:,} segments and {n_ev:,} events")
     return 0
 
 

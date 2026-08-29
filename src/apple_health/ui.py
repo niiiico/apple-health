@@ -369,6 +369,40 @@ def route_section(route: dict | None) -> str:
             f"</div>")
 
 
+def segments_section(segments: list[dict] | None, events: list[dict] | None) -> str:
+    """The legs of a workout, and the markers the watch left in it.
+
+    Segments are what a structured session actually was — intervals, or the legs
+    of a triathlon. The export names no activity per segment, so a leg shows the
+    workout's own; that is stated rather than dressed up, because inventing
+    "Swimming" for leg one of a triathlon would be a fact nobody recorded.
+    """
+    out = ""
+    if segments:
+        rows = ""
+        for s in segments:
+            dur = (f"{int(s['duration_s'] // 60)}:{int(s['duration_s'] % 60):02d}"
+                   if s.get("duration_s") else "—")
+            stats = s.get("stats") or {}
+            hr = stats.get("HeartRate") or {}
+            extra = f"{hr['avg']:.0f} bpm" if hr.get("avg") else ""
+            rows += (f"<tr><td>{s['idx']}</td>"
+                     f"<td>{_esc(s['started_at'][11:19])}</td>"
+                     f"<td>{_esc(dur)}</td><td>{_esc(extra)}</td>"
+                     f"<td>{len(stats)} mesure(s)</td></tr>")
+        out += ("<h2>Segments</h2><div class=\"card\"><table>"
+                "<tr><th>#</th><th>début</th><th>durée</th><th>FC moy</th>"
+                f"<th>données</th></tr>{rows}</table>"
+                '<p class="note">Découpage enregistré par la montre. '
+                "L'export ne nomme pas le sport de chaque segment.</p></div>")
+    if events:
+        chips = " · ".join(f"{e['count']}× {_esc(e['kind'])}" for e in events)
+        out += (f'<h2>Marqueurs</h2><div class="card"><p>{chips}</p>'
+                '<p class="note">Laps, segments, pauses et reprises tels que '
+                "la montre les a posés.</p></div>")
+    return out
+
+
 def render_session(detail: dict) -> str:
     """One session in full — the zone data the store holds and the page hid.
 
@@ -461,7 +495,9 @@ def render_session(detail: dict) -> str:
         f'{_esc(s.get("tz") or "")}</p>'
         + (f'<p class="cov">{_esc(conditions)}</p>' if conditions else "")
         + coverage_line(detail["coverage"]) + review_section
-        + route_section(detail.get("route")) + hr_html + laps_html
+        + route_section(detail.get("route"))
+        + segments_section(detail.get("segments"), detail.get("events"))
+        + hr_html + laps_html
         + f'<h2>Note</h2><div class="card" data-card>'
         f'<input type="hidden" data-field="workout_id" value="{s["id"]}">'
         f'<textarea data-field="note" placeholder="how it went, what changed, '

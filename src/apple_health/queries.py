@@ -253,6 +253,27 @@ def session_detail(store: Store, workout_id: int, tz: tzinfo | None = None) -> d
                 "sampled": True,
             }
 
+        cur.execute(
+            """SELECT idx, activity, started_at, ended_at, stats
+                 FROM workout_segments WHERE workout_id = %s ORDER BY idx""",
+            (workout_id,))
+        segments = [
+            {"idx": r["idx"], "activity": r["activity"],
+             "started_at": r["started_at"].isoformat(),
+             "ended_at": r["ended_at"].isoformat() if r["ended_at"] else None,
+             "duration_s": ((r["ended_at"] - r["started_at"]).total_seconds()
+                            if r["ended_at"] else None),
+             "stats": r["stats"]}
+            for r in cur.fetchall()]
+
+        cur.execute(
+            """SELECT kind, count(*) n, min(started_at) first_at
+                 FROM workout_events WHERE workout_id = %s
+             GROUP BY kind ORDER BY count(*) DESC""", (workout_id,))
+        event_counts = [{"kind": r["kind"], "count": r["n"],
+                         "first_at": r["first_at"].isoformat()}
+                        for r in cur.fetchall()]
+
         cur.execute("SELECT review, model, created_at,"
                     " basis->>'observed_through' AS observed_through"
                     " FROM session_reviews WHERE workout_id = %s", (workout_id,))
@@ -292,6 +313,11 @@ def session_detail(store: Store, workout_id: int, tz: tzinfo | None = None) -> d
         # finding the fastest continuous 200 in sixty-six lengths is a scan a
         # model should not be doing by hand in prose.
         "swim": _swim_summary(laps),
+        "segments": segments or None,
+        # Grouped rather than listed: a run carries hundreds of motionPaused
+        # markers and one lap that matters, and a raw list buries the second in
+        # the first.
+        "events": event_counts or None,
         # The advisor's own reading of this session, if it has written one. Kept
         # apart from `session.note`, which is the athlete's: a model's opinion
         # and the athlete's recollection must never become indistinguishable.
