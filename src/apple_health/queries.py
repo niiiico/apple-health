@@ -144,6 +144,45 @@ def list_sessions(store: Store, start: date, end: date,
     }
 
 
+def _swim_summary(laps: list) -> dict | None:
+    """Benchmark distances a swim actually contains, wall to wall.
+
+    Each window is measured start-of-first to end-of-last, *including* the rests
+    inside it, and reports them: eight lengths with twenty seconds between each
+    is a set, not a 200, and a number that hides the difference flatters.
+    """
+    if not laps or len(laps) < 2:
+        return None
+    from .commands.swimsplits import Length, best_window
+
+    lengths = [Length(l["started_at"],
+                      l["started_at"] + timedelta(seconds=l["duration_s"] or 0),
+                      l["distance_m"] or 0.0)
+               for l in laps if l["started_at"] and l["distance_m"]]
+    if len(lengths) < 2:
+        return None
+
+    out: dict = {
+        "lengths": len(lengths),
+        "distance_m": round(sum(l.metres for l in lengths)),
+        "length_m": lengths[0].metres,
+        "swum_s": round(sum(l.seconds for l in lengths)),
+        "note": "Chaque fenêtre est mesurée bord à bord, repos compris ; "
+                "`continuous` est vrai sous 5 s de repos cumulé.",
+    }
+    for metres in (100.0, 200.0, 400.0):
+        w = best_window(lengths, metres)
+        if w:
+            out[f"best_{int(metres)}m"] = {
+                "elapsed_s": round(w.elapsed, 1),
+                "rest_s": round(w.rest, 1),
+                "continuous": w.continuous,
+                "per_100m_s": round(w.elapsed / (metres / 100), 1),
+                "from_length": w.index + 1,
+            }
+    return out
+
+
 def session_detail(store: Store, workout_id: int, tz: tzinfo | None = None) -> dict:
     """One session in full: stats, zone shares *and* durations, drift, laps, note.
 
@@ -241,8 +280,18 @@ def session_detail(store: Store, workout_id: int, tz: tzinfo | None = None) -> d
         },
         "hr": hr,
         "route": route,
-        "laps": [{"idx": l["idx"], "duration_s": l["duration_s"],
-                  "distance_m": l["distance_m"]} for l in laps] or None,
+        # `started_at` is not decoration. Without it the rest between lengths
+        # cannot be computed, and the rest is what separates a continuous 200
+        # from eight lengths with a breather in each — which is the whole
+        # question a swim benchmark asks. A caller given only durations was
+        # being asked for arithmetic it had no data for.
+        "laps": [{"idx": l["idx"], "started_at": l["started_at"].isoformat(),
+                  "duration_s": l["duration_s"], "distance_m": l["distance_m"]}
+                 for l in laps] or None,
+        # And the benchmark itself, computed rather than left as an exercise:
+        # finding the fastest continuous 200 in sixty-six lengths is a scan a
+        # model should not be doing by hand in prose.
+        "swim": _swim_summary(laps),
         # The advisor's own reading of this session, if it has written one. Kept
         # apart from `session.note`, which is the athlete's: a model's opinion
         # and the athlete's recollection must never become indistinguishable.
@@ -419,7 +468,7 @@ def chat_history(store: Store, limit: int = 40,
     with store.cursor() as cur:
         if session_id:
             cur.execute(
-                """SELECT session_id, asked_at, question, answer, queries, model
+                """SELECT id, session_id, asked_at, question, answer, queries, model
                      FROM chat_turns WHERE session_id = %s
                  ORDER BY asked_at""", (session_id,))
         else:
@@ -429,7 +478,8 @@ def chat_history(store: Store, limit: int = 40,
         rows = cur.fetchall()
     return {
         "turns": [
-            {"session_id": r["session_id"], "asked_at": r["asked_at"].isoformat(),
+            {"id": r.get("id"), "session_id": r["session_id"],
+             "asked_at": r["asked_at"].isoformat(),
              "question": r["question"], "answer": r["answer"],
              "queries": r["queries"], "model": r["model"]}
             for r in rows

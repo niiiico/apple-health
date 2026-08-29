@@ -59,6 +59,9 @@
   .turn.you { background:var(--accent-bg, rgba(127,127,127,.12)); font-weight:600 }
   .turn.claude { background:transparent }
   .turn.live { opacity:.75 }
+  button.link { background:none; border:none; padding:0 0 0 .5rem; margin:0;
+                font:inherit; font-size:.85em; opacity:.65; cursor:pointer;
+                text-decoration:underline; width:auto }
   .transcript.full { max-height:none }
   a.chatrow { display:flex; flex-direction:column; gap:.15rem; padding:.6rem .2rem;
               border-bottom:1px solid rgba(127,127,127,.25); text-decoration:none }
@@ -66,6 +69,11 @@
   a.chatrow .q { font-weight:600 }
   .doc { white-space:pre-wrap; line-height:1.5 }
   svg.route { width:100%; max-width:26rem; height:auto; display:block; margin:0 auto .6rem }
+  .mapwrap { width:100%; max-width:30rem; margin:0 auto .4rem; overflow:hidden;
+             border-radius:8px; container-type:inline-size }
+  .tiles { position:relative; transform-origin:top left }
+  .tiles img { position:absolute; display:block; max-width:none }
+  svg.track { position:absolute; inset:0; width:100%; height:100% }
   svg.profile { width:100%; height:5rem; display:block; margin:.4rem 0 }
   button[disabled] { opacity:.55; cursor:progress }
 </style>
@@ -144,6 +152,14 @@ document.addEventListener("click", async (e) => {
     return;
   }
 
+  if (b.dataset.retry && !confirm(
+        "Réécrire cette question ? La réponse et tous les échanges suivants de "
+        + "cette conversation seront supprimés.")) {
+    b.disabled = false;
+    status.textContent = "";
+    return;
+  }
+
   // Slow buttons take the same polling path; fast ones stay a single request.
   if (b.dataset.slow) {
     const r = await run(b.dataset.action, payload, (secs) =>
@@ -216,6 +232,47 @@ function say(transcript, who, text, queries) {
 }
 
 // Enter sends, shift-enter makes a new line.
+// Rewriting a question. The later answers were formed partly from the wording
+// being changed, so they go — which is worth asking about before it happens.
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-edit]");
+  if (b) {
+    const chat = b.closest("[data-chat]") || document.querySelector("[data-chat]");
+    chat.querySelector("[data-field=message]").value = b.dataset.question;
+    chat.querySelector("[data-field=turn_id]").value = b.dataset.edit;
+    chat.querySelector("[data-chat-send]").hidden = true;
+    chat.querySelector("[data-retry]").hidden = false;
+    chat.querySelector("[data-cancel-edit]").hidden = false;
+    chat.querySelector("[data-field=message]").focus();
+    return;
+  }
+  const c = e.target.closest("button[data-cancel-edit]");
+  if (c) {
+    const chat = c.closest("[data-chat]");
+    chat.querySelector("[data-field=message]").value = "";
+    chat.querySelector("[data-field=turn_id]").value = "";
+    chat.querySelector("[data-chat-send]").hidden = false;
+    chat.querySelector("[data-retry]").hidden = true;
+    c.hidden = true;
+  }
+});
+
+// The tile grid is laid out at natural pixel size and scaled to fit, so the
+// track and the roads stay in step at any width. Done here rather than in CSS
+// because the scale depends on the grid's own dimensions.
+function fitMaps() {
+  document.querySelectorAll(".mapwrap").forEach(w => {
+    const g = w.querySelector(".tiles");
+    if (!g) return;
+    const natural = parseFloat(g.style.width);
+    if (!natural) return;
+    g.style.transform = `scale(${w.clientWidth / natural})`;
+  });
+}
+addEventListener("resize", fitMaps);
+addEventListener("DOMContentLoaded", fitMaps);
+fitMaps();
+
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Enter" || e.shiftKey) return;
   const box = e.target.closest("textarea[data-field=message]");

@@ -332,6 +332,28 @@ _MIGRATIONS: tuple[str, ...] = (
         PRIMARY KEY (workout_id, idx)
     );
     """,
+    # 10 — map tiles, cached in the database.
+    #
+    # A tile layer is a privacy trade and worth naming: the *pod* fetches tiles,
+    # never the browser, so the tile server sees one cluster address rather than
+    # a phone, and it sees tile coordinates rather than a track. Cached here
+    # permanently, so each tile is fetched once ever and a route re-read a
+    # hundred times costs nothing and says nothing further.
+    #
+    # In Postgres rather than a volume because the pod has none, and a cache
+    # that empties on every deploy would re-fetch the same neighbourhood weekly
+    # — which is exactly the repeated signal the caching exists to avoid.
+    """
+    CREATE TABLE map_tiles (
+        z          int NOT NULL,
+        x          int NOT NULL,
+        y          int NOT NULL,
+        fetched_at timestamptz NOT NULL DEFAULT now(),
+        content_type text NOT NULL,
+        data       bytea NOT NULL,
+        PRIMARY KEY (z, x, y)
+    );
+    """,
 )
 
 

@@ -12,6 +12,8 @@ import math
 from datetime import date, timedelta
 from pathlib import Path
 
+from . import tiles
+
 TEMPLATE = Path(__file__).parent / "ui_template.html"
 
 
@@ -90,12 +92,18 @@ def plan_section(plan: dict | None) -> str:
 </div>"""
 
 
-def _turn_html(turn: dict) -> str:
+def _turn_html(turn: dict, editable: bool = False) -> str:
     queries = turn.get("queries") or []
     note = (f'<div class="note">{len(queries)} requête(s) : '
             f'{_esc(", ".join(queries))}</div>' if queries else "")
     when = _esc(turn["asked_at"][:16].replace("T", " "))
-    return (f'<div class="turn you">{_esc(turn["question"])}</div>'
+    edit = ""
+    if editable and turn.get("id"):
+        # The question travels in a data attribute so the box can be filled
+        # without a round trip, and the button says what it will destroy.
+        edit = (f'<button class="link" data-edit="{int(turn["id"])}" '
+                f'data-question="{_esc(turn["question"])}">réécrire</button>')
+    return (f'<div class="turn you">{_esc(turn["question"])}{edit}</div>'
             f'<div class="turn claude">{_esc(turn["answer"])}{note}'
             f'<div class="note">{when}</div></div>')
 
@@ -128,7 +136,7 @@ def render_chat(session_id: str | None, turns: list[dict]) -> str:
     id is what makes the CLI pick up where it left off — or, if the pod has
     restarted since, what finds the transcript to rebuild it from.
     """
-    transcript = "".join(_turn_html(t) for t in turns)
+    transcript = "".join(_turn_html(t, editable=True) for t in turns)
     title = _esc(turns[0]["question"][:70]) if turns else "Nouvelle conversation"
     body = (
         f"<h1>{title}</h1>"
@@ -137,9 +145,13 @@ def render_chat(session_id: str | None, turns: list[dict]) -> str:
         f'<div class="card chat" data-card data-chat'
         + (f' data-session="{_esc(session_id)}"' if session_id else "")
         + '>'
+        '<input type="hidden" data-field="turn_id" value="">'
         '<textarea data-field="message" rows="3" autofocus '
         'placeholder="pose ta question…"></textarea>'
         '<button data-action="chat" data-chat-send data-slow>Envoyer</button>'
+        '<button data-action="retry_turn" data-retry data-slow hidden>'
+        'Réécrire et relancer</button>'
+        '<button class="link" data-cancel-edit hidden>annuler</button>'
         '<span data-status></span></div>')
     return TEMPLATE.read_text().replace("__BODY__", body)
 
@@ -299,6 +311,31 @@ def route_section(route: dict | None) -> str:
         # y is flipped: SVG counts downwards, latitude upwards.
         f"{H - ((lat - b['min_lat']) / scale * H + (H - lat_span / scale * H) / 2):.2f}"
         for lat, lon in pts)
+    # Tiles under the track, in one shared projection. The polyline below is
+    # kept in its own equirectangular box as a fallback; this block replaces it
+    # when a grid can be computed, because two projections would put the track
+    # in the field beside the road.
+    grid = tiles.layout(b)
+    proj = tiles.project(pts, grid)
+    imgs = "".join(
+        f'<img src="/tiles/{grid["z"]}/{grid["x0"] + c}/{grid["y0"] + r}.png" '
+        f'loading="lazy" alt="" width="256" height="256" '
+        f'style="left:{c * 256}px;top:{r * 256}px">'
+        for r in range(grid["rows"]) for c in range(grid["cols"]))
+    track = " ".join(f"{x:.1f},{y:.1f}" for x, y in proj)
+    mapped = (
+        f'<div class="mapwrap" style="aspect-ratio:{grid["width"]}/{grid["height"]}">'
+        f'<div class="tiles" style="width:{grid["width"]}px;height:{grid["height"]}px">'
+        f"{imgs}"
+        f'<svg viewBox="0 0 {grid["width"]} {grid["height"]}" class="track" '
+        f'preserveAspectRatio="none">'
+        f'<polyline points="{track}" fill="none" stroke="#e8590c" '
+        f'stroke-width="4" stroke-linejoin="round" stroke-linecap="round" '
+        f'opacity="0.9"/></svg></div></div>'
+        f'<p class="note">Fond de carte © OpenStreetMap. Les tuiles sont '
+        f"récupérées par le serveur, jamais par ce navigateur, et gardées en "
+        f"cache — une tuile n'est demandée qu'une seule fois.</p>")
+
     map_svg = (
         f'<svg viewBox="0 0 {W:.0f} {H:.0f}" class="route" '
         f'preserveAspectRatio="xMidYMid meet" role="img" aria-label="parcours">'
@@ -328,9 +365,8 @@ def route_section(route: dict | None) -> str:
                 f'<p class="note">{lo:.0f}–{hi:.0f} m — profil échantillonné '
                 f"sur {len(pairs)} points.</p>")
 
-    return (f"<h2>Parcours</h2><div class=\"card\">{map_svg}{profile}"
-            f'<p class="note">Tracé dessiné localement — aucune tuile, aucune '
-            f"coordonnée ne quitte le réseau.</p></div>")
+    return (f"<h2>Parcours</h2><div class=\"card\">{mapped}{profile}"
+            f"</div>")
 
 
 def render_session(detail: dict) -> str:

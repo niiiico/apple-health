@@ -10,6 +10,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
+from apple_health import tiles as _tiles
 from apple_health.commands.swimsplits import (
     Length, best_window, group_by_session,
 )
@@ -81,3 +84,38 @@ def test_a_pause_mid_session_does_not_split_it():
     """A two-minute rest is a set boundary, not a different swim."""
     lengths = _lengths([(30, 5), (30, 120), (30, 5), (30, 0)])
     assert len(group_by_session(lengths)) == 1
+
+
+# --- map projection ----------------------------------------------------------
+# The tiles and the track must come from one projection. Two would put the track
+# in the field beside the road, and it would look plausible.
+
+
+def test_a_known_point_lands_on_its_known_tile():
+    """Greenwich at zoom 1 is the corner of the four world tiles."""
+    x, y = _tiles.lonlat_to_tile(0.0, 0.0, 1)
+    assert x == pytest.approx(1.0) and y == pytest.approx(1.0)
+
+
+def test_longitude_and_latitude_are_not_transposed():
+    """Tokyo is east and north; x large, y small."""
+    x, y = _tiles.lonlat_to_tile(35.68, 139.76, 10)
+    assert 900 < x < 920 and 400 < y < 420
+
+
+def test_zoom_shrinks_until_the_route_fits():
+    """A route spanning a continent cannot be shown at street level."""
+    wide = {"min_lat": 35.0, "max_lat": 45.0, "min_lon": 130.0, "max_lon": 140.0}
+    tight = {"min_lat": 35.68, "max_lat": 35.69, "min_lon": 139.76, "max_lon": 139.77}
+    assert _tiles.choose_zoom(wide) < _tiles.choose_zoom(tight)
+
+
+def test_the_track_projects_into_the_grid_it_was_measured_against():
+    b = {"min_lat": 35.68, "max_lat": 35.70, "min_lon": 139.76, "max_lon": 139.79}
+    grid = _tiles.layout(b)
+    pts = [(b["min_lat"], b["min_lon"]), (b["max_lat"], b["max_lon"])]
+    xy = _tiles.project(pts, grid)
+    # Every point inside the grid it was laid out for, with a tile of slack.
+    for x, y in xy:
+        assert -256 <= x <= grid["width"] + 256
+        assert -256 <= y <= grid["height"] + 256

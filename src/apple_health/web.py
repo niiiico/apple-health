@@ -38,7 +38,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
-from . import queries, ui
+from . import queries, tiles, ui
 from .store import Store
 
 WINDOW_DAYS = 45
@@ -60,6 +60,61 @@ def _as_date(value: Any, field: str) -> date:
         return date.fromisoformat(str(value)[:10])
     except ValueError:
         raise ValueError(f"{field} must be an ISO date, got {value!r}") from None
+
+
+def retry_turn(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite a question and answer it again, dropping everything after it.
+
+    A conversation is a chain: an answer three turns later was formed partly
+    from the question being edited, so leaving those in place would produce a
+    thread whose later replies respond to words nobody ever said. They are
+    deleted, and the client asks before that happens.
+
+    The rewritten turn deliberately does **not** resume the CLI session. That
+    session still holds the original question, so continuing it would answer the
+    new wording with the old context still in mind — the edit would appear to
+    take and quietly not have. The truncated history is replayed instead.
+    """
+    from . import advisor
+
+    turn_id = _as_int(payload.get("turn_id"), "turn_id")
+    message = (payload.get("message") or "").strip()
+    if not message:
+        raise ValueError("message is required")
+
+    with store.cursor() as cur:
+        cur.execute("SELECT session_id, asked_at FROM chat_turns WHERE id = %s",
+                    (turn_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise ValueError(f"no turn {turn_id}")
+        session_id, asked_at = row["session_id"], row["asked_at"]
+
+        cur.execute(
+            """SELECT question, answer FROM chat_turns
+                WHERE session_id = %s AND asked_at < %s ORDER BY asked_at""",
+            (session_id, asked_at))
+        history = [dict(r) for r in cur.fetchall()]
+
+        cur.execute(
+            "DELETE FROM chat_turns WHERE session_id = %s AND asked_at >= %s",
+            (session_id, asked_at))
+        dropped = cur.rowcount
+    store.commit()
+
+    run = advisor.chat(message, None, on_progress=payload.get("_progress"),
+                       history=history)
+    queries = [c.get("query") for c in run.calls]
+    with store.cursor() as cur:
+        cur.execute(
+            """INSERT INTO chat_turns (session_id, question, answer, queries, model)
+               VALUES (%s,%s,%s,%s,%s)""",
+            # Kept under the original session id so the thread stays one thread
+            # in the list, even though the model is answering in a new one.
+            (session_id, message, run.text, json.dumps(queries), advisor.MODEL))
+    store.commit()
+    return {"message": f"réécrit ({dropped - 1} réponse(s) suivante(s) supprimée(s))",
+            "reply": run.text, "session_id": session_id, "queries": queries}
 
 
 def set_goal(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
@@ -242,6 +297,7 @@ ACTIONS: dict[str, Callable[[Store, dict[str, Any]], dict[str, Any]]] = {
     "review_session": review_session,
     "write_plan": write_plan,
     "chat": chat,
+    "retry_turn": retry_turn,
     "set_goal": set_goal,
     "archive_goal": archive_goal,
     "set_session_note": set_session_note,
@@ -286,7 +342,7 @@ def render_session_page(store: Store, workout_id: int) -> str:
 # to a screen lock, an app switch or a moment of bad signal, and Safari reports
 # the loss as "TypeError: Load failed" with the work already half-done. They run
 # in a background thread instead and the client polls, which survives all three.
-SLOW = {"chat", "review_session", "write_plan"}
+SLOW = {"chat", "retry_turn", "review_session", "write_plan"}
 
 # Finished jobs are kept briefly so a client that blinked can still collect its
 # answer. Deliberately in memory rather than a table: the *result* of every slow
@@ -419,6 +475,30 @@ def handler_for(dsn: str | None, window_days: int = WINDOW_DAYS):
 
         def do_GET(self):  # noqa: N802
             parsed_early = urlparse(self.path)
+            if parsed_early.path.startswith("/tiles/"):
+                try:
+                    z, x, y = (int(v) for v in
+                               parsed_early.path.removeprefix("/tiles/")
+                               .removesuffix(".png").split("/"))
+                except ValueError:
+                    return self._send(404, b"not found", "text/plain")
+                store = Store(dsn)
+                try:
+                    got = tiles.fetch(store, z, x, y)
+                finally:
+                    store.close()
+                if got is None:
+                    # A blank square, not an error: the polyline is drawn
+                    # independently and the page is still useful without this.
+                    return self._send(404, b"", "image/png")
+                data, content_type = got
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(data)))
+                # Cached upstream for good, so the browser may too.
+                self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+                self.end_headers()
+                return self.wfile.write(data)
             if parsed_early.path == "/api/job":
                 job_id = (parse_qs(parsed_early.query).get("id") or [""])[0]
                 return self._json(200, job_state(job_id))

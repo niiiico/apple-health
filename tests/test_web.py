@@ -400,7 +400,7 @@ def test_a_failed_turn_stores_no_question(monkeypatch):
 # as a failure while the work is already running and its result already stored.
 
 def test_slow_actions_are_the_ones_that_ask_claude():
-    assert web.SLOW == {"chat", "review_session", "write_plan"}
+    assert web.SLOW == {"chat", "retry_turn", "review_session", "write_plan"}
     # Everything else stays a single request — a note must save instantly.
     assert "set_session_note" not in web.SLOW and "set_goal" not in web.SLOW
 
@@ -469,3 +469,51 @@ def test_a_job_records_its_result_even_if_the_connection_will_not_close(monkeypa
         _t.sleep(0.1)
     state = web.job_state(job)
     assert state["state"] == "done" and state["result"] == {"reply": "quand même"}
+
+
+# --- editing a question ------------------------------------------------------
+
+def test_editing_a_turn_drops_the_answers_that_followed(monkeypatch):
+    """An answer three turns later was formed from the question being edited.
+
+    Leaving it would produce a thread whose later replies respond to words
+    nobody ever said.
+    """
+    from apple_health.advisor import Run
+    monkeypatch.setattr("apple_health.advisor.chat",
+                        lambda *a, **k: Run("nouvelle réponse", [], session_id="s2"))
+    store = _Store([{"session_id": "s1", "asked_at": date(2026, 8, 29)},
+                    [{"question": "avant", "answer": "ok"}]])
+    store.cur.rowcount = 3
+    out = web.retry_turn(store, {"turn_id": 7, "message": "question corrigée"})
+    sql = " | ".join(s for s, _ in store.cur.executed)
+    assert "DELETE FROM chat_turns" in sql
+    assert "INSERT INTO chat_turns" in sql
+    assert out["reply"] == "nouvelle réponse"
+
+
+def test_an_edited_turn_does_not_resume_the_old_session(monkeypatch):
+    """The old session still holds the original question.
+
+    Resuming it would answer the new wording with the old one still in mind —
+    the edit would appear to take and quietly not have.
+    """
+    seen = {}
+
+    def _chat(message, session_id=None, **kw):
+        seen["session_id"] = session_id
+        seen["history"] = kw.get("history")
+        from apple_health.advisor import Run
+        return Run("r", [], session_id="fresh")
+
+    monkeypatch.setattr("apple_health.advisor.chat", _chat)
+    store = _Store([{"session_id": "s1", "asked_at": date(2026, 8, 29)},
+                    [{"question": "avant", "answer": "ok"}]])
+    web.retry_turn(store, {"turn_id": 7, "message": "corrigée"})
+    assert seen["session_id"] is None
+    assert seen["history"] == [{"question": "avant", "answer": "ok"}]
+
+
+def test_editing_an_unknown_turn_is_refused():
+    with pytest.raises(ValueError, match="no turn"):
+        web.retry_turn(_Store([None]), {"turn_id": 999, "message": "x"})
