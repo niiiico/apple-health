@@ -545,8 +545,14 @@ final class SyncEngine {
             hr_file: hrFile,
             swim_file: swimFile,
             weather_temp_c: metaQuantity(w, HKMetadataKeyWeatherTemperature, .degreeCelsius()),
+            // Normalised, not scaled. The first version multiplied by 100 on the
+            // assumption that HKUnit.percent() yields a fraction, and shipped
+            // "8400 %" — a plausible-looking number in a field nobody checks,
+            // which is the exact failure this project exists to stop. The
+            // Python side already normalised this way and was right; the Swift
+            // guessed and was not.
             weather_humidity_pct: metaQuantity(w, HKMetadataKeyWeatherHumidity, .percent())
-                .map { $0 * 100 },      // HKUnit.percent() is a fraction
+                .map { $0 > 100 ? $0 / 100 : $0 },
             elevation_ascended_m: metaQuantity(w, HKMetadataKeyElevationAscended, .meter()),
             elevation_descended_m: metaQuantity(w, HKMetadataKeyElevationDescended, .meter()),
             avg_mets: metaQuantity(w, HKMetadataKeyAverageMETs,

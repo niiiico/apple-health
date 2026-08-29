@@ -15,6 +15,12 @@ struct ContentView: View {
                 .font(.system(size: 64))
                 .foregroundStyle(.pink)
             Text("HealthSync").font(.largeTitle.bold())
+            // The build, on screen. Without it there is no way to tell an
+            // install apart from the one before it except by syncing and
+            // reading the JSON for fields that should be there.
+            Text(DeviceInfo.appVersion)
+                .font(.footnote.monospaced())
+                .foregroundStyle(.secondary)
 
             Text(status)
                 .font(.callout)

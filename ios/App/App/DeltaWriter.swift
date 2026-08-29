@@ -122,7 +122,17 @@ enum DateFormats {
 /// Device / app identifiers, informational fields in the delta.
 enum DeviceInfo {
     static var model: String { UIDevice.current.model }
+    /// Marketing version *and* build, e.g. "1.0 (44)".
+    ///
+    /// The build number is the one that matters and was missing:
+    /// CFBundleShortVersionString has read "1.0" since the first release, so a
+    /// delta could not say which build wrote it and neither could the screen.
+    /// Establishing that a sync had picked up new fields meant inspecting the
+    /// JSON for them — workable once, useless as a habit.
     static var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "0"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "\(short) (\(build))"
     }
 }
