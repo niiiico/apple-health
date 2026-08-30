@@ -76,10 +76,21 @@ def context(store: Store, tz: tzinfo | None = None) -> dict:
                     "asked_at": r["asked_at"].isoformat(),
                     "question": r["question"], "answer": r["answer"],
                     "queries": r["queries"]} for r in cur.fetchall()]
-        cur.execute("SELECT body, updated_at FROM documents WHERE slug = 'plan'")
-        row = cur.fetchone()
-        plan = ({"body": row["body"], "updated_at": row["updated_at"].isoformat()}
-                if row else None)
+        # The advisor writes slug 'plan'; the athlete's own race plan and log
+        # were loaded under their own slugs. Reading only 'plan' meant the page
+        # said "no plan" while holding a six-thousand-word race plan that no
+        # route in the app could reach.
+        # The advisor's own slug first, then anything named like a plan, then
+        # newest. Ordering on updated_at alone put the *log* — a retrospective
+        # journal — under a heading that says Plan, because both were loaded in
+        # the same second and the log landed last.
+        cur.execute("""SELECT slug, body, updated_at FROM documents
+                        ORDER BY (slug = 'plan') DESC,
+                                 (slug LIKE '%%plan%%') DESC,
+                                 updated_at DESC""")
+        docs = [{"slug": r["slug"], "body": r["body"],
+                 "updated_at": r["updated_at"].isoformat()} for r in cur.fetchall()]
+        plan = docs[0] if docs else None
         cur.execute("SELECT id, goal, target_date FROM goals WHERE archived_at IS NULL"
                     " ORDER BY target_date NULLS LAST, created_at")
         goals = [{"id": r["id"], "goal": r["goal"],
@@ -100,6 +111,7 @@ def context(store: Store, tz: tzinfo | None = None) -> dict:
         # rather than inventing a plausible objective to advise towards.
         "goals": goals,
         "plan": plan,
+        "documents": docs,
         "chat_history": history,
     }
 

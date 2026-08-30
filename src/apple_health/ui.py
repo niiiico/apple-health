@@ -16,6 +16,23 @@ from . import tiles
 
 TEMPLATE = Path(__file__).parent / "ui_template.html"
 
+# HealthKit enum -> what he calls it. "HighIntensityIntervalTraining" is 29
+# unbreakable characters in a 311px row; the rest were simply English.
+ACTIVITIES = {
+    "Running": "Course", "Swimming": "Natation", "Cycling": "Velo",
+    "Walking": "Marche", "Hiking": "Randonnee", "Climbing": "Escalade",
+    "SwimBikeRun": "Triathlon", "HighIntensityIntervalTraining": "Fractionne",
+    "TraditionalStrengthTraining": "Renfo",
+    "FunctionalStrengthTraining": "Renfo", "CoreTraining": "Gainage",
+    "Rowing": "Rameur", "Elliptical": "Elliptique",
+    "StairClimbing": "Escaliers", "Cooldown": "Retour au calme",
+}
+
+
+def _activity(name):
+    """Display name, falling back to the raw enum rather than hiding it."""
+    return ACTIVITIES.get(name or "", name or "-")
+
 
 def _esc(value: object) -> str:
     """HTML-escape, rendering None as an empty string rather than 'None'."""
@@ -47,7 +64,7 @@ def zone_bands_section(model: dict) -> str:
     labels already carry their ranges, so a two-column table said it twice.
     """
     bands = " · ".join(_esc(label) for label in model["boundaries"])
-    return f"""<h2>Heart-rate zones</h2>
+    return f"""<h2>Zones FC</h2>
 <div class="card">
   <p>{bands}</p>
   <p class="note">{_esc(model["note"])}</p>
@@ -77,111 +94,62 @@ def chat_section(history: list[dict] | None = None) -> str:
 
 
 def plan_section(plan: dict | None) -> str:
-    """The standing plan, and the button that rewrites it."""
+    """The plan, whichever document is the plan.
+
+    This read only the advisor's own slug and so announced "no plan" while the
+    database held a six-thousand-word race plan under its own name, reachable
+    from no page in the app.
+    """
     if plan and plan.get("body"):
-        body = (f'<div class="doc">{_esc(plan["body"])}</div>'
-                f'<p class="note">Réécrit le {_esc(plan["updated_at"][:16])}.</p>')
+        body = (f'<details class="card" open><summary>{_esc(plan["slug"])} — '
+                f'{_esc(plan["updated_at"][:10])}</summary>'
+                f'<div class="doc">{_esc(plan["body"])}</div></details>')
+        label = "Reecrire le plan"
     else:
-        body = ('<p class="note">Aucun plan écrit pour l\'instant. Il est rédigé '
-                "à partir des objectifs ci-dessus et de l'entraînement récent.</p>")
+        body = ('<p class="note">Aucun plan. Il sera redige a partir des '
+                "objectifs et de l'entrainement recent.</p>")
+        # "Rewrite" over an empty state offers to redo something that does not
+        # exist.
+        label = "Ecrire le plan"
     return f"""<h2>Plan</h2>
+{body}
 <div class="card" data-card>
-  {body}
-  <button data-action="write_plan" data-reload="1" data-slow>Réécrire le plan</button>
+  <button data-action="write_plan" data-reload="1" data-slow>{label}</button>
   <span data-status></span>
 </div>"""
 
 
-def _turn_html(turn: dict, editable: bool = False) -> str:
-    queries = turn.get("queries") or []
-    note = (f'<div class="note">{len(queries)} requête(s) : '
-            f'{_esc(", ".join(queries))}</div>' if queries else "")
-    when = _esc(turn["asked_at"][:16].replace("T", " "))
-    edit = ""
-    if editable and turn.get("id"):
-        # The question travels in a data attribute so the box can be filled
-        # without a round trip, and the button says what it will destroy.
-        edit = (f'<button class="link" data-edit="{int(turn["id"])}" '
-                f'data-question="{_esc(turn["question"])}">réécrire</button>')
-    return (f'<div class="turn you">{_esc(turn["question"])}{edit}</div>'
-            f'<div class="turn claude">{_esc(turn["answer"])}{note}'
-            f'<div class="note">{when}</div></div>')
-
-
-def render_chats(sessions: list[dict]) -> str:
-    """The conversation list: one row per thread, newest first."""
-    if sessions:
-        rows = "".join(
-            f'<a class="chatrow" href="/chat/{_esc(s["session_id"])}">'
-            f'<span class="q">{_esc(s["first_question"])}</span>'
-            f'<span class="note">{_esc(s["last_at"][:16].replace("T", " "))} · '
-            f'{s["turns"]} échange(s)</span></a>'
-            for s in sessions)
-    else:
-        rows = ('<p class="note">Aucune conversation. Pose une question depuis '
-                "la page d'accueil ou ci-dessous.</p>")
-    body = (
-        "<h1>Discussions</h1>"
-        f'<p><a class="btn" href="/chat/new">Nouvelle conversation</a> '
-        f'<a class="btn" href="/">← séances</a></p>'
-        f'<div class="card">{rows}</div>')
-    return TEMPLATE.read_text().replace("__BODY__", body)
-
-
-def render_chat(session_id: str | None, turns: list[dict]) -> str:
-    """One conversation, full screen, ready to continue.
-
-    `session_id` is carried on the form rather than in a hidden field the user
-    could not see: continuing a thread is the whole point of the page, and the
-    id is what makes the CLI pick up where it left off — or, if the pod has
-    restarted since, what finds the transcript to rebuild it from.
-    """
-    transcript = "".join(_turn_html(t, editable=True) for t in turns)
-    title = _esc(turns[0]["question"][:70]) if turns else "Nouvelle conversation"
-    body = (
-        f"<h1>{title}</h1>"
-        f'<p><a class="btn" href="/chat">← discussions</a></p>'
-        f'<div class="transcript full" data-transcript>{transcript}</div>'
-        f'<div class="card chat" data-card data-chat'
-        + (f' data-session="{_esc(session_id)}"' if session_id else "")
-        + '>'
-        '<input type="hidden" data-field="turn_id" value="">'
-        '<textarea data-field="message" rows="3" autofocus '
-        'placeholder="pose ta question…"></textarea>'
-        '<button data-action="chat" data-chat-send data-slow>Envoyer</button>'
-        '<button data-action="retry_turn" data-retry data-slow hidden>'
-        'Réécrire et relancer</button>'
-        '<button class="link" data-cancel-edit hidden>annuler</button>'
-        '<span data-status></span></div>')
-    return TEMPLATE.read_text().replace("__BODY__", body)
-
-
 def goals_section(goals: list[dict]) -> str:
-    """What you are training for, and the form to say so.
+    """What he is training for, one card each.
 
-    An empty list is called out rather than left blank: the advisor writes
-    towards these, and with none recorded it is commenting rather than coaching.
+    Not a table. These are 300-500 characters of prose, and a table cell beside
+    a date column and a button left about 150px for them on a phone — twenty-five
+    wrapped lines per goal, all of it above the sessions.
     """
     if goals:
-        rows = "".join(
-            f"<tr><td>{_esc(g['goal'])}</td>"
-            f"<td>{_esc(g['target_date'] or '—')}</td>"
-            f'<td><button data-action="archive_goal" data-reload="1"'
-            f" data-arg-id=\"{int(g['id'])}\">archive</button></td></tr>"
-            for g in goals)
-        table = ("<table><tr><th>goal</th><th>by</th><th></th></tr>"
-                 f"{rows}</table>")
+        cards = ""
+        for g in goals:
+            when = (f'<span class="note">echeance {_esc(g["target_date"])}</span>'
+                    if g.get("target_date") else "")
+            cards += (
+                f'<div class="card" data-card>'
+                f'<p>{_esc(g["goal"])}</p>{when} '
+                # Quiet, and it asks first. It was the loudest control in the
+                # section, unconfirmed, on a cramped touch row — one fat-finger
+                # tap permanently archived the race goal, with no undo anywhere.
+                f'<button class="ghost" data-action="archive_goal" data-reload="1" '
+                f'data-arg-id="{int(g["id"])}" '
+                f'data-confirm="Archiver cet objectif ?">archiver</button>'
+                f"<span data-status></span></div>")
     else:
-        table = ('<p class="note warn">None recorded. The advisor has nothing to '
-                 "write towards, so it can describe your training but not judge "
-                 "it against anything.</p>")
+        cards = ('<p class="note warn">Aucun objectif. L\'assistant n\'a rien vers '
+                 "quoi ecrire : il peut decrire ton entrainement, pas le juger.</p>")
 
-    return f"""<h2>Goals</h2>
-<div class="card">{table}</div>
+    return f"""<h2>Objectifs</h2>{cards}
 <div class="card" data-card>
-  <input data-field="goal" placeholder="what you are training for, in your words">
-  <label>target date (optional)<input data-field="target_date" type="date"></label>
-  <button data-action="set_goal" data-reload="1">Record goal</button>
+  <input data-field="goal" placeholder="ce que tu prepares, dans tes mots">
+  <label>echeance (optionnel)<input data-field="target_date" type="date"></label>
+  <button data-action="set_goal" data-reload="1">Enregistrer</button>
   <span data-status></span>
 </div>"""
 
@@ -197,15 +165,15 @@ def period_notes_section(notes: list[dict]) -> str:
         cards = ('<p class="note">Nothing recorded. This is where "pool closed", '
                  '"travelling, no bike" or "ill" goes — without it the advisor '
                  "explains a drop in volume as lost fitness.</p>")
-    return f"""<h2>Periods</h2>
+    return f"""<h2>Périodes</h2>
 {cards}
 <div class="card" data-card>
   <div class="grid">
-    <label>from<input data-field="starts_on" type="date"></label>
-    <label>to (optional)<input data-field="ends_on" type="date"></label>
+    <label>du<input data-field="starts_on" type="date"></label>
+    <label>au (optionnel)<input data-field="ends_on" type="date"></label>
   </div>
   <textarea data-field="note" placeholder="piscine indisponible ; vélo de route trouvé tardivement…"></textarea>
-  <button data-action="set_period_note" data-reload="1">Add period</button>
+  <button data-action="set_period_note" data-reload="1">Ajouter</button>
   <span data-status></span>
 </div>"""
 
@@ -223,64 +191,135 @@ def window_nav(start: date, end: date, span: dict) -> str:
     prev_start = prev_end - timedelta(days=days - 1)
     next_start = end + timedelta(days=1)
     next_end = next_start + timedelta(days=days - 1)
+    # The default window ends today, so "plus recent" pointed at a window
+    # entirely in the future and always answered "aucune dans cette fenetre" —
+    # a control that was wrong every time it was reachable.
+    has_later = end < date.today()
     earliest = (span.get("earliest") or "")[:10]
     latest = (span.get("latest") or "")[:10]
+    later = (f'<a class="btn" href="/?from={next_start}&to={next_end}">'
+             f"plus récent &rarr;</a>") if has_later else ""
     return (
         f'<div class="card nav"><div class="row">'
-        f'<a class="btn" href="/?from={prev_start}&to={prev_end}">&larr; earlier</a>'
+        f'<a class="btn" href="/?from={prev_start}&to={prev_end}">&larr; plus ancien</a>'
         f'<form class="range" method="get" action="/">'
         f'<input type="date" name="from" value="{start}">'
         f'<input type="date" name="to" value="{end}">'
-        f'<button type="submit">Show</button></form>'
-        f'<a class="btn" href="/?from={next_start}&to={next_end}">later &rarr;</a>'
-        f'</div><p class="note">Record runs {_esc(earliest)} to {_esc(latest)} '
-        f'({span.get("workouts", 0):,} workouts) — any of it is reachable from here.</p></div>')
+        f'<button type="submit">Afficher</button></form>'
+        + later
+        + f'</div><p class="note">Le dossier va du {_esc(earliest)} au {_esc(latest)} '
+          f'({span.get("workouts", 0):,} séances) — tout est atteignable d\'ici.'
+          f"</p></div>")
 
 
 def sessions_section(sessions: list[dict]) -> str:
     """Sessions in the window, each with a place to say what the numbers cannot."""
     if not sessions:
-        return ("<h2>Sessions</h2><p class=\"note\">None in this window — "
-                "which is a fact about the window, not about the record.</p>")
+        return ("<h2>Séances</h2><p class=\"note\">Aucune dans cette fenêtre — "
+                "ce qui dit quelque chose de la fenêtre, pas du dossier.</p>")
     cards = []
     for s in sessions:
         stats = " · ".join(x for x in (
             _num(s.get("distance_km"), 2, " km") if s.get("distance_km") else "",
             _num(s.get("duration_min"), 0, " min") if s.get("duration_min") else "",
-            f"FC {_num(s.get('avg_hr'), 0)}/{_num(s.get('max_hr'), 0)}" if s.get("avg_hr") else "",
+            f"FC moy {_num(s.get('avg_hr'), 0)} - max {_num(s.get('max_hr'), 0)}"
+            if s.get("avg_hr") else "",
         ) if x)
+        # Nothing is flagged for being absent any more. "no laps" fired on 19
+        # of 22 rows and only ever restated the activity beside it -- no run or
+        # ride in thirteen years has laps. "no HR series" fires on none of the
+        # recent window and on 98.8% of the whole record, so paging backwards
+        # changed which pill decorated every row: it described the ingest era,
+        # not the session. A flag that fires on nearly everything is skipped.
         flags = ""
-        if not s.get("has_hr_series"):
-            flags += '<span class="flag">no HR series</span>'
-        if not s.get("has_laps"):
-            flags += '<span class="flag">no laps</span>'
+        if s.get("has_laps"):
+            flags += '<span class="flag">laps</span>'
         cards.append(
             f'<div class="card" data-card>'
             f'<div class="row"><span class="when">{_esc(s["date"])}</span>'
-            f'<span class="act">{_esc(s["activity"])}</span>'
+            f'<span class="act">{_esc(_activity(s["activity"]))}</span>'
             f'<span class="stat">{_esc(stats)}</span>{flags}'
-            f'<a class="btn detail" href="/session/{s["id"]}">detail</a></div>'
+            f'<a class="btn detail" href="/session/{s["id"]}">détail</a></div>'
+            # Folded away unless there is something to read. Nineteen of
+            # twenty-two sessions had no note, and an always-open textarea plus
+            # its button is ~95px each — about 45% of the list's height given to
+            # a control used twice a week.
+            f'<details class="notebox"{" open" if s.get("note") else ""}>'
+            f'<summary>{"note" if s.get("note") else "+ note"}</summary>'
             f'<input type="hidden" data-field="workout_id" value="{s["id"]}">'
-            f'<textarea data-field="note" placeholder="how it went, what changed, why it was cut short…">'
+            f'<textarea data-field="note" rows="3" placeholder="comment ça s\'est '
+            f'passé, ce qui a changé, pourquoi c\'était écourté…">'
             f'{_esc(s.get("note"))}</textarea>'
-            f'<button data-action="set_session_note">Save note</button>'
-            f'<span data-status></span></div>')
-    return "<h2>Sessions</h2>" + "".join(cards)
+            f'<button data-action="set_session_note">Enregistrer</button>'
+            f'<span data-status></span></details></div>')
+    return "<h2>Séances</h2>" + "".join(cards)
+
+
+def headline(goals: list[dict] | None) -> str:
+    """The title, carrying the countdown when a dated goal exists.
+
+    "health" earned a whole line and said nothing. Days-to-race is the most
+    decision-relevant number he has and was buried mid-paragraph in a cell.
+    """
+    # The furthest dated goal, not the nearest. Earlier deadlines are milestones
+    # on the way to it — taking the soonest put "Livrable S13" in the headline
+    # and left the race it is a milestone for out of the page entirely.
+    target = None
+    for g in (goals or []):
+        if not g.get("target_date"):
+            continue
+        try:
+            when = date.fromisoformat(g["target_date"])
+        except ValueError:
+            continue
+        if when >= date.today() and (target is None or when > target[0]):
+            target = (when, g["goal"])
+    if target is None:
+        return "<h1>health</h1>"
+    days = (target[0] - date.today()).days
+    # First clause only — the goal itself is a paragraph — cut on a word.
+    label = target[1].split(".")[0].split(",")[0].split(" (")[0]
+    if len(label) > 40:
+        label = label[:40].rsplit(" ", 1)[0] + "…"
+    return (f'<h1>J-{days} <span class="muted">— {_esc(label)}, '
+            f'{_esc(target[0].strftime("%d/%m"))}</span></h1>')
+
+
+def window_summary(sessions: list[dict], start: date, end: date,
+                   record: dict) -> str:
+    """What this window actually held, so it need not be counted by eye."""
+    if not sessions:
+        return ""
+    minutes = sum(s.get("duration_min") or 0 for s in sessions)
+    by_sport: dict[str, int] = {}
+    for s in sessions:
+        name = _activity(s.get("activity"))
+        by_sport[name] = by_sport.get(name, 0) + 1
+    split = " · ".join(f"{n} {name.lower()}"
+                       for name, n in sorted(by_sport.items(), key=lambda kv: -kv[1]))
+    hours = f"{int(minutes // 60)} h {int(minutes % 60):02d}"
+    return (f'<p class="cov"><b>{len(sessions)} seances</b> · {hours} · '
+            f"{_esc(split)}</p>")
 
 
 def render(context: dict, sessions: list[dict], start: date, end: date) -> str:
     """The index page."""
+    # Order follows use. Sessions used to start about 1,800px down on a phone —
+    # two full screens past goals, plan, zones and periods, which are settings
+    # and reference. Those are write forms and a static line; the record is what
+    # the page is for.
     body = (
-        "<h1>health</h1>"
+        headline(context.get("goals"))
         + coverage_line(context["coverage"])
-        + window_nav(start, end, context["record"])
+        + window_summary(sessions, start, end, context["record"])
         + chat_section(context.get("chat_history"))
-        + goals_section(context["goals"])
-        + plan_section(context.get("plan"))
-        + zone_bands_section(context["zone_model"])
-        + period_notes_section(context["period_notes"])
         + sessions_section(sessions)
-        + "<footer>Everything on this page is what no sensor recorded.</footer>"
+        + window_nav(start, end, context["record"])
+        + plan_section(context.get("plan"))
+        + goals_section(context["goals"])
+        + period_notes_section(context["period_notes"])
+        + zone_bands_section(context["zone_model"])
+        + "<footer>Ce que la montre n'enregistre pas se note ici.</footer>"
     )
     return TEMPLATE.read_text().replace("__BODY__", body)
 
@@ -451,7 +490,8 @@ def render_session(detail: dict) -> str:
     stats = " · ".join(x for x in (
         _num(s.get("distance_km"), 2, " km") if s.get("distance_km") else "",
         _num(s.get("duration_min"), 0, " min") if s.get("duration_min") else "",
-        f"FC {_num(s.get('avg_hr'), 0)}/{_num(s.get('max_hr'), 0)}" if s.get("avg_hr") else "",
+        f"FC moy {_num(s.get('avg_hr'), 0)} - max {_num(s.get('max_hr'), 0)}"
+            if s.get("avg_hr") else "",
         _num(s.get("energy_kcal"), 0, " kcal") if s.get("energy_kcal") else "",
     ) if x)
 

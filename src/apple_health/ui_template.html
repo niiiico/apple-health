@@ -1,7 +1,12 @@
 <!doctype html>
+<html lang="fr">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>health — record what the sensor cannot</title>
+<!-- Without lang, iOS Safari keeps offering to translate a page already in the
+     reader's language. -->
+<meta name="theme-color" content="#faf9f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#16151a" media="(prefers-color-scheme: dark)">
+<title>health — ce que le capteur n'enregistre pas</title>
 <style>
   :root {
     --bg:#faf9f7; --panel:#fff; --ink:#1c1b19; --muted:#6b6862;
@@ -10,7 +15,11 @@
   @media (prefers-color-scheme: dark) { :root {
     --bg:#16151a; --panel:#1e1d23; --ink:#ece9e4; --muted:#9a958d;
     --line:#302e36; --accent:#e08b5f; --ok:#5fbe86; --warn:#d5a441;
+    /* White on this accent is 2.6:1 — under AA, on every primary button, on a
+       phone read outdoors after training. Dark ink on it is about 7:1. */
+    --on-accent:#16151a;
   } }
+  :root { --on-accent:#fff }
   * { box-sizing:border-box }
   body { margin:0; padding:1.5rem 1rem 4rem; background:var(--bg); color:var(--ink);
          font:15px/1.55 ui-sans-serif,-apple-system,"Segoe UI",sans-serif; }
@@ -32,11 +41,14 @@
   .row .stat { color:var(--muted); font-size:.9rem }
   .flag { font-size:.72rem; padding:.05rem .4rem; border-radius:99px;
           border:1px solid var(--line); color:var(--muted) }
-  textarea, input, select { width:100%; font:inherit; color:var(--ink);
+  /* 16px, not inherit: below that iOS Safari zooms on focus and does not zoom
+     back, on the most-repeated interaction here. maximum-scale would fix it and
+     break pinch-zoom on the route maps. */
+  textarea, input, select { width:100%; font:inherit; font-size:16px; color:var(--ink);
     background:var(--bg); border:1px solid var(--line); border-radius:7px;
     padding:.45rem .55rem; margin-top:.5rem }
   textarea { min-height:2.6rem; resize:vertical }
-  button { font:inherit; font-weight:600; color:#fff; background:var(--accent);
+  button { font:inherit; font-weight:600; color:var(--on-accent); background:var(--accent);
     border:0; border-radius:7px; padding:.45rem .9rem; cursor:pointer; margin-top:.5rem }
   button.ghost { background:transparent; color:var(--muted); border:1px solid var(--line) }
   .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(7rem,1fr)); gap:.5rem }
@@ -48,7 +60,9 @@
   footer { margin-top:3rem; color:var(--muted); font-size:.8rem }
   a.btn { display:inline-block; text-decoration:none; font-weight:600; font-size:.85rem;
           color:var(--muted); border:1px solid var(--line); border-radius:7px;
-          padding:.3rem .7rem }
+          padding:.55rem .8rem; min-height:44px; line-height:1.85 }
+  button.ghost { background:none; color:var(--muted); border:1px solid var(--line);
+                 font-weight:500 }
   a.btn:hover { color:var(--ink); border-color:var(--accent) }
   a.detail { margin-left:auto }
   .nav .row { align-items:center }
@@ -182,6 +196,10 @@ document.addEventListener("click", async (e) => {
     return;
   }
 
+  if (b.dataset.confirm && !confirm(b.dataset.confirm)) {
+    b.disabled = false; status.textContent = ""; return;
+  }
+
   if (b.dataset.retry && !confirm(
         "Réécrire cette question ? La réponse et tous les échanges suivants de "
         + "cette conversation seront supprimés.")) {
@@ -281,7 +299,6 @@ function say(transcript, who, text, queries, steps) {
   transcript.scrollTop = transcript.scrollHeight;
 }
 
-// Enter sends, shift-enter makes a new line.
 // Rewriting a question. The later answers were formed partly from the wording
 // being changed, so they go — which is worth asking about before it happens.
 document.addEventListener("click", (e) => {
@@ -323,8 +340,11 @@ addEventListener("resize", fitMaps);
 addEventListener("DOMContentLoaded", fitMaps);
 fitMaps();
 
+// Cmd/Ctrl+Enter sends. Plain Enter stays a newline: there is no shift-enter on
+// an iOS keyboard, so binding Enter to send made it impossible to write a
+// multi-line question on the device this is mostly read on.
 document.addEventListener("keydown", (e) => {
-  if (e.key !== "Enter" || e.shiftKey) return;
+  if (e.key !== "Enter" || !(e.metaKey || e.ctrlKey)) return;
   const box = e.target.closest("textarea[data-field=message]");
   if (!box) return;
   e.preventDefault();

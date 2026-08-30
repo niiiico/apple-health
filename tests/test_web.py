@@ -134,7 +134,7 @@ def test_archiving_keeps_the_row():
 
 
 def test_no_goals_is_called_out_rather_than_left_blank():
-    assert "nothing to write towards" in ui.goals_section([])
+    assert "rien vers" in ui.goals_section([])
 
 
 # --- period notes ------------------------------------------------------------
