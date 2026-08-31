@@ -71,6 +71,15 @@
   .nav form.range button { margin-top:0 }
   .transcript { max-height:26rem; overflow-y:auto; margin-bottom:.6rem }
   .transcript.past { max-height:none; margin-top:.6rem }
+  /* The landing page shows one exchange, clipped. The sessions are the point of
+     that page; a full transcript above them would undo the reordering. */
+  .transcript.last { max-height:11rem; position:relative;
+                     mask-image:linear-gradient(#000 70%, transparent) }
+  /* Two native date inputs plus a button need ~295px of hard minimum in a 311px
+     box on a 375px phone — it fits today with nothing to spare. Wrapping costs
+     nothing and removes the cliff. */
+  .nav form.range { flex-wrap:wrap }
+  .nav form.range input { min-width:8.5rem }
   details summary { cursor:pointer; font-weight:600 }
   .transcript:empty { display:none }
   .turn { white-space:pre-wrap; padding:.5rem .7rem; border-radius:6px; margin:.4rem 0 }

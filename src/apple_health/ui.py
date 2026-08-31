@@ -74,17 +74,26 @@ def zone_bands_section(model: dict) -> str:
 def chat_section(history: list[dict] | None = None) -> str:
     """A conversation box, above everything already said.
 
-    History is stored and shown: an answer worth acting on is worth re-reading,
-    and a question already asked is worth not asking twice. The model's *memory*
-    of a thread still ends at a pod restart — the CLI keeps that in the pod —
-    but the transcript outlives it, so what was said is never lost with it.
+    The last exchange is shown, not just linked. This docstring used to claim
+    history was displayed while the transcript div was rendered empty every
+    time: he would ask something, read the answer, lock the phone, and find a
+    blank box the next morning with the answer two taps away.
+
+    One turn, not the thread. This is the landing page; the conversation itself
+    lives at /chat, and burying the sessions under a transcript would repeat the
+    mistake this reordering just fixed.
     """
+    last = ""
+    if history:
+        turn = history[0]
+        last = (f'<div class="turn you">{_esc(turn["question"])}</div>'
+                f'<div class="turn claude">{_esc(turn["answer"])}</div>')
     past = ('<p class="note"><a href="/chat">Toutes les discussions →</a></p>'
             if history else "")
 
     return f"""<h2>Demander</h2>
 <div class="card chat" data-card data-chat>
-  <div data-transcript class="transcript"></div>
+  <div data-transcript class="transcript last">{last}</div>
   <textarea data-field="message" rows="2"
     placeholder="par ex. « la nage de mardi, c'était correct ? »"></textarea>
   <button data-action="chat" data-chat-send data-slow>Envoyer</button>
@@ -233,7 +242,7 @@ def sessions_section(sessions: list[dict]) -> str:
         # not the session. A flag that fires on nearly everything is skipped.
         flags = ""
         if s.get("has_laps"):
-            flags += '<span class="flag">laps</span>'
+            flags += '<span class="flag">longueurs</span>'
         cards.append(
             f'<div class="card" data-card>'
             f'<div class="row"><span class="when">{_esc(s["date"])}</span>'
@@ -253,6 +262,21 @@ def sessions_section(sessions: list[dict]) -> str:
             f'<button data-action="set_session_note">Enregistrer</button>'
             f'<span data-status></span></details></div>')
     return "<h2>Séances</h2>" + "".join(cards)
+
+
+def render_error(exc: Exception) -> str:
+    """A readable failure page.
+
+    The class name is shown and the message is not: a psycopg error carries the
+    DSN, which names the host, the database and the user. That belongs in the
+    pod's log, where it already is, and not on a screen.
+    """
+    body = ('<h1>Ça a cassé</h1>'
+            '<p class="cov">La page n\'a pas pu être rendue. Le détail est dans '
+            "le journal du serveur ; rien n'a été modifié.</p>"
+            f'<div class="card"><p class="note warn">{_esc(type(exc).__name__)}</p></div>'
+            '<p><a class="btn" href="/">← réessayer</a></p>')
+    return TEMPLATE.read_text().replace("__BODY__", body)
 
 
 def headline(goals: list[dict] | None) -> str:
@@ -504,7 +528,7 @@ def render_session(detail: dict) -> str:
             for label in hr["zone_percent"] if hr["zone_seconds"].get(label))
         drift = " → ".join(f"{d['avg']:.0f}" for d in hr["drift_thirds"]) or "—"
         hr_html = (
-            f'<h2>Heart rate</h2><div class="card">'
+            f'<h2>Fréquence cardiaque</h2><div class="card">'
             f'<p class="note">{hr["samples"]:,} samples · avg {hr["avg"]:.0f} · '
             f'{hr["min"]:.0f}–{hr["max"]:.0f} bpm</p>'
             f"<table><tr><th>zone</th><th>time</th><th>share</th></tr>{rows}</table>"
@@ -513,7 +537,7 @@ def render_session(detail: dict) -> str:
             + (f' effective {_esc(zm["effective_from"])}' if zm.get("effective_from") else "")
             + ".</p></div>")
     else:
-        hr_html = ('<h2>Heart rate</h2><div class="card"><p class="note warn">'
+        hr_html = ('<h2>Fréquence cardiaque</h2><div class="card"><p class="note warn">'
                    "No series recorded for this session — avg and max only. That is "
                    "different from a flat one, and nothing here should be read as "
                    "zone distribution.</p></div>")
@@ -522,16 +546,34 @@ def render_session(detail: dict) -> str:
     if laps:
         rows = "".join(f"<tr><td>{l['idx']}</td><td>{_num(l['duration_s'], 1, ' s')}</td>"
                        f"<td>{_num(l['distance_m'], 0, ' m')}</td></tr>" for l in laps)
-        laps_html = ("<h2>Laps</h2><div class=\"card\"><table>"
-                     f"<tr><th>#</th><th>time</th><th>distance</th></tr>{rows}</table></div>")
+        swim = detail.get("swim") or {}
+        best = ""
+        for metres in (100, 200, 400):
+            w = swim.get(f"best_{metres}m")
+            if not w:
+                continue
+            secs = w["elapsed_s"]
+            mark = "continu" if w["continuous"] else f"dont {w['rest_s']:.0f} s de repos"
+            best += (f"<tr><td>{metres} m</td>"
+                     f"<td>{int(secs // 60)}:{secs % 60:04.1f}</td>"
+                     f"<td>{int(w['per_100m_s'] // 60)}:{w['per_100m_s'] % 60:04.1f}"
+                     f"/100m</td><td>{mark}</td></tr>")
+        summary = (f'<table><tr><th>distance</th><th>temps</th><th>allure</th>'
+                   f"<th></th></tr>{best}</table>"
+                   f'<p class="note">Fenêtres mesurées bord à bord, repos compris.'
+                   "</p>") if best else ""
+        laps_html = (f"<h2>Longueurs</h2><div class=\"card\">{summary}"
+                     "<details><summary>{} longueur(s)</summary><table>".format(len(laps))
+                     + f"<tr><th>#</th><th>temps</th><th>distance</th></tr>{rows}"
+                     "</table></details></div>")
     else:
-        laps_html = ('<h2>Laps</h2><div class="card"><p class="note">None recorded — '
-                     "HealthSync does not export lap events yet, so splits still have "
-                     "to be read off the watch.</p></div>")
+        # No heading at all. A run has no laps and never will, so "Laps — none
+        # recorded" was a section rendered on nearly every page to say nothing.
+        laps_html = ""
 
     body = (
-        f'<h1>{_esc(s["date"])} — {_esc(s["activity"])}</h1>'
-        f'<p class="cov">{_esc(stats)} · started {_esc(s["started_at"][11:16])} '
+        f'<h1>{_esc(s["date"])} — {_esc(_activity(s["activity"]))}</h1>'
+        f'<p class="cov">{_esc(stats)} · départ {_esc(s["started_at"][11:16])} '
         f'{_esc(s.get("tz") or "")}</p>'
         + (f'<p class="cov">{_esc(conditions)}</p>' if conditions else "")
         + coverage_line(detail["coverage"]) + review_section
@@ -540,10 +582,10 @@ def render_session(detail: dict) -> str:
         + hr_html + laps_html
         + f'<h2>Note</h2><div class="card" data-card>'
         f'<input type="hidden" data-field="workout_id" value="{s["id"]}">'
-        f'<textarea data-field="note" placeholder="how it went, what changed, '
-        f'why it was cut short…">{_esc(s.get("note"))}</textarea>'
-        f'<button data-action="set_session_note">Save note</button>'
+        f'<textarea data-field="note" rows="3" placeholder="comment ça s\'est passé, '
+        f'ce qui a changé, pourquoi c\'était écourté…">{_esc(s.get("note"))}</textarea>'
+        f'<button data-action="set_session_note">Enregistrer</button>'
         f'<span data-status></span></div>'
-        f'<p style="margin-top:2rem"><a class="btn" href="/">&larr; all sessions</a></p>'
+        f'<p style="margin-top:2rem"><a class="btn" href="/">&larr; toutes les séances</a></p>'
     )
     return TEMPLATE.read_text().replace("__BODY__", body)

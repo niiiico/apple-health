@@ -33,6 +33,7 @@ import http.server
 import json
 import threading
 import time
+import traceback
 import uuid
 from datetime import date, datetime, timedelta
 from typing import Any, Callable
@@ -557,7 +558,14 @@ def handler_for(dsn: str | None, window_days: int = WINDOW_DAYS):
                 finally:
                     store.close()
             except Exception as exc:
-                return self._send(500, f"{exc}".encode(), "text/plain; charset=utf-8")
+                # Logged with its traceback, and answered with a page rather
+                # than a wall of psycopg text on a phone. One of these was found
+                # in the access log with nothing anywhere to explain it, which
+                # is the part that mattered: an error nobody can diagnose is an
+                # error that recurs.
+                traceback.print_exc(file=sys.stderr)
+                return self._send(
+                    500, ui.render_error(exc).encode(), "text/html; charset=utf-8")
             self._send(200, page.encode(), "text/html; charset=utf-8")
 
         def do_POST(self):  # noqa: N802
