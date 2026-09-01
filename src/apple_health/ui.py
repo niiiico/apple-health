@@ -128,6 +128,70 @@ def plan_section(plan: dict | None) -> str:
 </div>"""
 
 
+def _turn_html(turn: dict, editable: bool = False) -> str:
+    queries = turn.get("queries") or []
+    note = (f'<div class="note">{len(queries)} requête(s) : '
+            f'{_esc(", ".join(queries))}</div>' if queries else "")
+    when = _esc(turn["asked_at"][:16].replace("T", " "))
+    edit = ""
+    if editable and turn.get("id"):
+        # The question travels in a data attribute so the box can be filled
+        # without a round trip, and the button says what it will destroy.
+        edit = (f'<button class="link" data-edit="{int(turn["id"])}" '
+                f'data-question="{_esc(turn["question"])}">réécrire</button>')
+    return (f'<div class="turn you">{_esc(turn["question"])}{edit}</div>'
+            f'<div class="turn claude">{_esc(turn["answer"])}{note}'
+            f'<div class="note">{when}</div></div>')
+
+
+def render_chats(sessions: list[dict]) -> str:
+    """The conversation list: one row per thread, newest first."""
+    if sessions:
+        rows = "".join(
+            f'<a class="chatrow" href="/chat/{_esc(s["session_id"])}">'
+            f'<span class="q">{_esc(s["first_question"])}</span>'
+            f'<span class="note">{_esc(s["last_at"][:16].replace("T", " "))} · '
+            f'{s["turns"]} échange(s)</span></a>'
+            for s in sessions)
+    else:
+        rows = ('<p class="note">Aucune conversation. Pose une question depuis '
+                "la page d'accueil ou ci-dessous.</p>")
+    body = (
+        "<h1>Discussions</h1>"
+        f'<p><a class="btn" href="/chat/new">Nouvelle conversation</a> '
+        f'<a class="btn" href="/">← séances</a></p>'
+        f'<div class="card">{rows}</div>')
+    return TEMPLATE.read_text().replace("__BODY__", body)
+
+
+def render_chat(session_id: str | None, turns: list[dict]) -> str:
+    """One conversation, full screen, ready to continue.
+
+    `session_id` is carried on the form rather than in a hidden field the user
+    could not see: continuing a thread is the whole point of the page, and the
+    id is what makes the CLI pick up where it left off — or, if the pod has
+    restarted since, what finds the transcript to rebuild it from.
+    """
+    transcript = "".join(_turn_html(t, editable=True) for t in turns)
+    title = _esc(turns[0]["question"][:70]) if turns else "Nouvelle conversation"
+    body = (
+        f"<h1>{title}</h1>"
+        f'<p><a class="btn" href="/chat">← discussions</a></p>'
+        f'<div class="transcript full" data-transcript>{transcript}</div>'
+        f'<div class="card chat" data-card data-chat'
+        + (f' data-session="{_esc(session_id)}"' if session_id else "")
+        + '>'
+        '<input type="hidden" data-field="turn_id" value="">'
+        '<textarea data-field="message" rows="3" autofocus '
+        'placeholder="pose ta question…"></textarea>'
+        '<button data-action="chat" data-chat-send data-slow>Envoyer</button>'
+        '<button data-action="retry_turn" data-retry data-slow hidden>'
+        'Réécrire et relancer</button>'
+        '<button class="link" data-cancel-edit hidden>annuler</button>'
+        '<span data-status></span></div>')
+    return TEMPLATE.read_text().replace("__BODY__", body)
+
+
 def goals_section(goals: list[dict]) -> str:
     """What he is training for, one card each.
 

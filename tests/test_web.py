@@ -536,3 +536,43 @@ def test_a_rebuilt_thread_keeps_its_original_id(monkeypatch):
     _sql, params = store.cur.executed[-1]
     assert params[0] == "thread-1"
     assert out["session_id"] == "thread-1"
+
+
+# --- the pages exist ---------------------------------------------------------
+# Every renderer a route calls, asserted to exist and to produce a page. These
+# are cheap and would have caught a real outage: rewriting an adjacent function
+# deleted `render_chats` and `render_chat` outright, and nothing failed until
+# the link was clicked, because no test referenced them.
+
+@pytest.mark.parametrize("name", [
+    "render", "render_session", "render_chats", "render_chat", "render_error",
+])
+def test_every_renderer_a_route_calls_still_exists(name):
+    assert callable(getattr(ui, name, None)), f"ui.{name} is gone"
+
+
+def test_the_conversation_list_renders():
+    page = ui.render_chats([
+        {"session_id": "s1", "first_question": "et mardi ?",
+         "last_at": "2026-08-30T10:00:00", "turns": 2}])
+    assert "et mardi ?" in page and "/chat/s1" in page
+
+
+def test_an_empty_conversation_list_still_renders():
+    assert "Discussions" in ui.render_chats([])
+
+
+def test_a_conversation_renders_its_turns():
+    page = ui.render_chat("s1", [
+        {"id": 1, "asked_at": "2026-08-30T10:00:00", "question": "et mardi ?",
+         "answer": "correct.", "queries": ["session"]}])
+    assert "et mardi ?" in page and "correct." in page
+    # The rewrite affordance is what makes a wrong question fixable.
+    assert 'data-edit="1"' in page
+
+
+def test_the_error_page_hides_the_message_and_keeps_the_class():
+    """A psycopg message carries the DSN — host, database and user."""
+    page = ui.render_error(RuntimeError("dbname=apple_health host=postgres.int"))
+    assert "RuntimeError" in page
+    assert "dbname=apple_health" not in page
