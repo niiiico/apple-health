@@ -276,8 +276,22 @@ def chat(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
     # Reported as it arrives, so a two-minute answer is visibly forming rather
     # than a spinner that says nothing about whether anything is happening.
     progress = payload.get("_progress")
+    # Anything written during this turn, so a change is never silent. Read after
+    # the run rather than parsed from its output: what landed in the table is
+    # what happened, and the model's account of it is not evidence.
+    with store.cursor() as cur:
+        cur.execute("SELECT max(id) hi FROM advisor_writes")
+        before_id = cur.fetchone()["hi"] or 0
+
     run = advisor.chat(message, session_id, on_progress=progress, history=history)
     queries = [c.get("query") for c in run.calls]
+
+    with store.cursor() as cur:
+        cur.execute(
+            """SELECT id, summary, target FROM advisor_writes
+                WHERE id > %s ORDER BY id""", (before_id,))
+        changes = [{"id": r["id"], "summary": r["summary"], "target": r["target"]}
+                   for r in cur.fetchall()]
 
     # Stored after the answer exists, never before: a question with no answer is
     # a worse record than no record. The session id groups a conversation; it is
@@ -300,7 +314,7 @@ def chat(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
     # reason; the CLI's is an implementation detail that changes under it.
     return {"message": "", "reply": run.text,
             "session_id": session_id or run.session_id, "queries": queries,
-            "steps": run.steps}
+            "steps": run.steps, "changes": changes}
 
 
 ACTIONS: dict[str, Callable[[Store, dict[str, Any]], dict[str, Any]]] = {

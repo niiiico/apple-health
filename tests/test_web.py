@@ -353,7 +353,9 @@ def test_a_chat_turn_threads_the_conversation(monkeypatch):
                    session_id="sess-2")
 
     monkeypatch.setattr("apple_health.advisor.chat", _chat)
-    store = _Store([[{"question": "et hier ?", "answer": "bien"}]])
+    store = _Store([[{"question": "et hier ?", "answer": "bien"}],  # history
+                    {"hi": 0},                                     # writes before
+                    []])                                           # writes after
     out = web.chat(store, {"message": "et mardi ?", "session_id": "sess-1"})
     assert seen["message"] == "et mardi ?" and seen["session"] == "sess-1"
     # The stored transcript travels with the turn, so a resume that fails
@@ -376,9 +378,9 @@ def test_a_chat_turn_is_stored_with_its_question(monkeypatch):
     monkeypatch.setattr("apple_health.advisor.chat",
                         lambda *a, **k: Run("oui", [{"query": "context"}],
                                             session_id="s-1"))
-    store = _Store()
+    store = _Store([{"hi": 0}, []])
     web.chat(store, {"message": "alors ?"})
-    sql, params = store.cur.executed[0]
+    sql, params = store.cur.executed[-1]
     assert "INSERT INTO chat_turns" in sql
     assert params[0] == "s-1" and params[1] == "alors ?" and params[2] == "oui"
     assert store.committed
@@ -390,10 +392,11 @@ def test_a_failed_turn_stores_no_question(monkeypatch):
         raise RuntimeError("claude exited 1")
 
     monkeypatch.setattr("apple_health.advisor.chat", _boom)
-    store = _Store()
+    store = _Store([{"hi": 0}])
     with pytest.raises(RuntimeError):
         web.chat(store, {"message": "alors ?"})
-    assert store.cur.executed == [] and not store.committed
+    assert not any("INSERT INTO chat_turns" in s for s, _ in store.cur.executed)
+    assert not store.committed
 
 
 # --- slow actions run behind the request -------------------------------------
@@ -531,7 +534,7 @@ def test_a_rebuilt_thread_keeps_its_original_id(monkeypatch):
     from apple_health.advisor import Run
     monkeypatch.setattr("apple_health.advisor.chat",
                         lambda *a, **k: Run("suite", [], session_id="cli-new"))
-    store = _Store([[{"question": "avant", "answer": "ok"}]])
+    store = _Store([[{"question": "avant", "answer": "ok"}], {"hi": 0}, []])
     out = web.chat(store, {"message": "et après ?", "session_id": "thread-1"})
     _sql, params = store.cur.executed[-1]
     assert params[0] == "thread-1"

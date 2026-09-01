@@ -65,10 +65,15 @@ _OAUTH_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
 _KEY_FILE = Path.home() / ".config/apple-health/claude-token"
 CLI = os.environ.get("AH_CLAUDE_CLI", "claude")
 
-# The only tool the model may use. A prefix rule, so `ah-query context` and
-# `ah-query sessions --start …` are permitted and nothing else is — no Read, no
-# Write, no bare Bash.
-ALLOWED_TOOLS = "Bash(ah-query:*)"
+# The only two commands the model may run. Prefix rules, so `ah-query context`
+# and `ah-write note --id …` are permitted and nothing else is — no Read, no
+# file Write, no bare Bash.
+#
+# `ah-write` reaches notes, goals and documents only: the things a person types
+# by hand. It has no subcommand for `workouts`, `hr_samples`, `laps` or
+# `route_points`, and must never grow one — what the watch measured is not a
+# model's to edit, and every guarantee this project makes rests on that.
+ALLOWED_TOOLS = "Bash(ah-query:*),Bash(ah-write:*)"
 
 # How far back `review` looks for unreviewed sessions by default. Not a filter
 # on what is worth reviewing — every session in the window gets one, however
@@ -137,6 +142,30 @@ TOOLS_DOC = """You have exactly one tool: the `ah-query` command, via Bash. It p
       last week's point as though it were new. These are prior *opinions*, not
       observations: anything factual in them must be re-queried before you rely
       on it. They may have been wrong.
+
+  ah-write note --id N --text "..."
+  ah-write goal --text "..." [--target-date YYYY-MM-DD]
+  ah-write doc --slug SLUG --text "..." [--append]
+  ah-write changes [--limit N]
+      Writing. These reach only what the athlete would type himself — his note
+      on a session, a goal, a document such as the race plan. There is no way to
+      alter what the watch recorded, and you should not look for one.
+
+      Every write is logged with what it replaced, and shown to him afterwards.
+
+      **Ask before you write when the write destroys something.** Use your
+      judgement rather than a rule; the distinction that matters is whether
+      anything of his is lost:
+
+        - Just do it: adding a note where there is none, recording a goal he has
+          just described, `--append`ing to a document, writing a document that
+          does not exist yet.
+        - Ask first, in the same reply, and wait for him to say yes: replacing a
+          note he wrote, rewriting a document wholesale rather than appending,
+          anything you are not sure he asked for.
+
+      When you are unsure, propose the exact text and ask. A change he did not
+      expect is worse than a question he did not need.
 
   ah-query doc [--slug SLUG]
       The athlete's own written material. With no argument, lists what exists.
@@ -364,6 +393,8 @@ def run_streaming(task: str, timeout: float = 900.0, resume: str | None = None,
     with tempfile.TemporaryDirectory(prefix="ah-advise-") as work:
         log = Path(work) / "queries.jsonl"
         env["AH_QUERY_LOG"] = str(log)
+        if resume:
+            env["AH_WRITE_SESSION"] = resume
         argv = [CLI, "-p", task,
                 "--allowed-tools", ALLOWED_TOOLS,
                 "--output-format", "stream-json", "--verbose",

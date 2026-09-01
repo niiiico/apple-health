@@ -354,6 +354,32 @@ _MIGRATIONS: tuple[str, ...] = (
         PRIMARY KEY (z, x, y)
     );
     """,
+    # 11 — what the advisor changed, and what it changed it from.
+    #
+    # The model can now write, which it could not before. The boundary is that
+    # it may write what a human writes by hand — notes, goals, documents — and
+    # never what a sensor measured. `workouts`, `hr_samples`, `laps` and
+    # `route_points` come from the watch; a model editing those would corrupt
+    # the record this whole project exists to keep honest.
+    #
+    # `before` is the point of this table. Without it a write is a rumour: you
+    # can see that something changed and not what it displaced, and there is
+    # nothing to undo it with.
+    """
+    CREATE TABLE advisor_writes (
+        id         bigserial PRIMARY KEY,
+        written_at timestamptz NOT NULL DEFAULT now(),
+        session_id text,
+        target     text NOT NULL,
+        target_key text NOT NULL,
+        summary    text NOT NULL,
+        before     jsonb,
+        after      jsonb,
+        undone_at  timestamptz
+    );
+
+    CREATE INDEX advisor_writes_recent ON advisor_writes (written_at DESC);
+    """,
 )
 
 

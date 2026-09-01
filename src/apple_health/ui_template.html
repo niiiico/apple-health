@@ -92,6 +92,9 @@
   .reflection .step { padding:.15rem 0 }
   .reflection .step.tool::before { content:"› "; opacity:.6 }
   .reflection .step.text { color:var(--ink) }
+  .changes { margin:.5rem 0 .2rem; padding:.5rem .7rem; border-radius:6px;
+             border:1px solid var(--accent); font-size:.9rem }
+  .changes .change { color:var(--accent); font-weight:600 }
   .reflection code { display:block; font-size:.85em; opacity:.65;
                      word-break:break-all }
   button.link { background:none; border:none; padding:0 0 0 .5rem; margin:0;
@@ -201,7 +204,7 @@ document.addEventListener("click", async (e) => {
     if (r.error) { status.textContent = r.error; status.className = "note warn"; return; }
     status.textContent = ""; 
     if (r.session_id) chat.dataset.session = r.session_id;
-    say(transcript, "claude", r.reply, r.queries, r.steps);
+    say(transcript, "claude", r.reply, r.queries, r.steps, r.changes);
     return;
   }
 
@@ -272,12 +275,26 @@ async function ask(payload, onTick) {
   return await run("chat", payload, onTick);
 }
 
-function say(transcript, who, text, queries, steps) {
+function say(transcript, who, text, queries, steps, changes) {
   const el = document.createElement("div");
   el.className = "turn " + who;
   // textContent, never innerHTML: the reply is model output and the question is
   // typed by hand, and neither should be able to put markup in this page.
   el.textContent = text;
+  // What it changed, stated plainly and never folded away. The reasoning is
+  // scaffolding and collapses; a write to his own record is not.
+  if (changes && changes.length) {
+    const box = document.createElement("div");
+    box.className = "changes";
+    box.textContent = changes.length === 1 ? "Modifié :" : "Modifié :";
+    for (const c of changes) {
+      const li = document.createElement("div");
+      li.className = "change";
+      li.textContent = c.summary;
+      box.appendChild(li);
+    }
+    el.appendChild(box);
+  }
   if (steps && steps.length) {
     // Kept, but folded away. Worth having when an answer looks wrong and you
     // want to see what it read; worth hiding the rest of the time.
