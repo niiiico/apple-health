@@ -380,7 +380,55 @@ _MIGRATIONS: tuple[str, ...] = (
 
     CREATE INDEX advisor_writes_recent ON advisor_writes (written_at DESC);
     """,
+    # 12 — superseded notes.
+    #
+    # A note is the one thing on a session that no sensor can reproduce: if it
+    # is overwritten it is gone, and until now every path overwrote silently —
+    # the athlete's own form as much as the advisor's write tool.
+    #
+    # Text is cheap and a training note is a few dozen words. Keeping every
+    # superseded version costs almost nothing and makes the note a record rather
+    # than a current value, which is what it always should have been: "douleur
+    # hanche droite" edited a week later still happened.
+    """
+    CREATE TABLE note_revisions (
+        id          bigserial PRIMARY KEY,
+        workout_id  bigint NOT NULL REFERENCES workouts(id) ON DELETE CASCADE,
+        note        text NOT NULL,
+        archived_at timestamptz NOT NULL DEFAULT now(),
+        -- Who caused the replacement, not who wrote the archived text: the
+        -- second is not knowable for anything written before this table.
+        replaced_by text NOT NULL
+    );
+
+    CREATE INDEX note_revisions_workout
+        ON note_revisions (workout_id, archived_at DESC);
+    """,
 )
+
+
+def archive_note(cur, workout_id: int, replaced_by: str) -> bool:
+    """Keep the current note before something replaces it.
+
+    Called by every path that writes `session_notes` — the athlete's form and
+    the advisor's tool alike. It lives here rather than in either of them
+    because a second write path that forgot to call it would lose exactly the
+    thing this exists to protect, and the loss would be silent.
+
+    Returns whether anything was archived; a blank or absent note is not a
+    version worth keeping.
+    """
+    cur.execute("SELECT note FROM session_notes WHERE workout_id = %s",
+                (workout_id,))
+    row = cur.fetchone()
+    previous = (row["note"] if row else "") or ""
+    if not previous.strip():
+        return False
+    cur.execute(
+        """INSERT INTO note_revisions (workout_id, note, replaced_by)
+           VALUES (%s,%s,%s)""",
+        (workout_id, previous, replaced_by))
+    return True
 
 
 @dataclass(frozen=True, slots=True)

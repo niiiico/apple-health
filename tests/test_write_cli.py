@@ -104,3 +104,13 @@ def test_a_goal_never_edits_an_existing_one():
     source = inspect.getsource(write_cli.write_goal)
     assert "UPDATE goals" not in source
     assert "INSERT INTO goals" in source
+
+
+# --- note history ------------------------------------------------------------
+
+def test_the_advisor_archives_before_replacing():
+    """Both write paths archive; neither may be the one that forgets."""
+    store = _Store([{"id": 5560}, {"note": "ancienne"}, {"note": "ancienne"}])
+    write_cli.write_note(store, 5560, "nouvelle")
+    sql = " | ".join(s for s, _ in store.cur.executed)
+    assert "INSERT INTO note_revisions" in sql

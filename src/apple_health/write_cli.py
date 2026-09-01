@@ -32,7 +32,7 @@ import sys
 from datetime import date
 from typing import Any
 
-from .store import Store
+from .store import Store, archive_note
 
 _SESSION_VAR = "AH_WRITE_SESSION"
 
@@ -65,6 +65,9 @@ def write_note(store: Store, workout_id: int, text: str) -> str:
                     (workout_id,))
         row = cur.fetchone()
         before = row["note"] if row else None
+        # Kept as a version as well as in the audit row: the audit says what a
+        # given write displaced, the revisions say what the note has been.
+        archive_note(cur, workout_id, "advisor")
 
         if not text:
             cur.execute("DELETE FROM session_notes WHERE workout_id = %s",

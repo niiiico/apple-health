@@ -165,9 +165,14 @@ def test_a_note_on_an_unknown_workout_is_refused():
 
 
 def test_an_emptied_note_deletes_rather_than_storing_blank():
-    store = _Store(answers=[{"?column?": 1}])
-    assert web.set_session_note(store, {"workout_id": 1, "note": "  "})["message"] == "note cleared"
-    assert "DELETE FROM session_notes" in store.cur.executed[1][0]
+    store = _Store(answers=[{"?column?": 1}, {"note": "douleur hanche droite"}])
+    msg = web.set_session_note(store, {"workout_id": 1, "note": "  "})
+    assert "effacée" in msg["message"]
+    sql = " | ".join(s for s, _ in store.cur.executed)
+    assert "DELETE FROM session_notes" in sql
+    # Clearing the box was the easiest way to lose a note, and it left nothing
+    # behind at all. The superseded text is kept.
+    assert "INSERT INTO note_revisions" in sql
 
 
 # --- rendering ---------------------------------------------------------------
@@ -579,3 +584,20 @@ def test_the_error_page_hides_the_message_and_keeps_the_class():
     page = ui.render_error(RuntimeError("dbname=apple_health host=postgres.int"))
     assert "RuntimeError" in page
     assert "dbname=apple_health" not in page
+
+
+def test_the_archiver_skips_a_blank_previous_note():
+    """An empty note is not a version worth keeping."""
+    from apple_health.store import archive_note
+    cur = _Cur([{"note": "   "}])
+    assert archive_note(cur, 1, "athlete") is False
+    assert not any("note_revisions" in s for s, _ in cur.executed)
+
+
+def test_the_archiver_keeps_a_real_previous_note():
+    from apple_health.store import archive_note
+    cur = _Cur([{"note": "douleur hanche droite"}])
+    assert archive_note(cur, 1, "advisor") is True
+    sql, params = cur.executed[-1]
+    assert "INSERT INTO note_revisions" in sql
+    assert params == (1, "douleur hanche droite", "advisor")

@@ -294,6 +294,14 @@ def session_detail(store: Store, workout_id: int, tz: tzinfo | None = None) -> d
                    "created_at": row["created_at"].isoformat(),
                    "observed_through": row["observed_through"]} if row else None)
 
+    with store.cursor() as cur:
+        cur.execute(
+            """SELECT note, archived_at, replaced_by FROM note_revisions
+                WHERE workout_id = %s ORDER BY archived_at DESC""", (workout_id,))
+        history_rows = [{"note": r["note"],
+                         "archived_at": r["archived_at"].isoformat(),
+                         "replaced_by": r["replaced_by"]} for r in cur.fetchall()]
+
     return {
         "coverage": _coverage(store, day, tz),
         "zone_model": _zone_basis(),
@@ -334,6 +342,9 @@ def session_detail(store: Store, workout_id: int, tz: tzinfo | None = None) -> d
         # apart from `session.note`, which is the athlete's: a model's opinion
         # and the athlete's recollection must never become indistinguishable.
         "review": review,
+        # Superseded versions, newest first. A note edited a week later still
+        # describes the day it was written about.
+        "note_history": history_rows or None,
     }
 
 

@@ -41,7 +41,7 @@ from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 from . import queries, tiles, ui
-from .store import Store
+from .store import Store, archive_note
 
 WINDOW_DAYS = 45
 
@@ -174,10 +174,13 @@ def set_session_note(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
         cur.execute("SELECT 1 FROM workouts WHERE id = %s", (workout_id,))
         if not cur.fetchone():
             raise ValueError(f"no workout with id {workout_id}")
+        # Before anything replaces it, including a clear. Emptying the box was
+        # the easiest way to lose a note and left nothing behind at all.
+        archive_note(cur, workout_id, "athlete")
         if not note:
             cur.execute("DELETE FROM session_notes WHERE workout_id = %s", (workout_id,))
             store.commit()
-            return {"message": "note cleared"}
+            return {"message": "note effacée (version précédente conservée)"}
         cur.execute(
             """INSERT INTO session_notes (workout_id, note) VALUES (%s,%s)
                ON CONFLICT (workout_id) DO UPDATE SET

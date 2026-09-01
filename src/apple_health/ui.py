@@ -328,6 +328,25 @@ def sessions_section(sessions: list[dict]) -> str:
     return "<h2>Séances</h2>" + "".join(cards)
 
 
+def note_history_section(history: list[dict] | None) -> str:
+    """Superseded versions of the note, folded away.
+
+    Shown at all because a note is the only thing on a session no sensor can
+    reproduce, and until now every edit destroyed the previous text — the
+    athlete's own form as readily as the advisor's tool.
+    """
+    if not history:
+        return ""
+    rows = "".join(
+        f'<div class="turn claude">{_esc(h["note"])}'
+        f'<div class="note">remplacée le '
+        f'{_esc(h["archived_at"][:16].replace("T", " "))} '
+        f'({"toi" if h["replaced_by"] == "athlete" else "l\'assistant"})</div></div>'
+        for h in history)
+    return (f'<details class="card"><summary>Versions précédentes '
+            f"({len(history)})</summary>{rows}</details>")
+
+
 def render_error(exc: Exception) -> str:
     """A readable failure page.
 
@@ -650,6 +669,7 @@ def render_session(detail: dict) -> str:
         f'ce qui a changé, pourquoi c\'était écourté…">{_esc(s.get("note"))}</textarea>'
         f'<button data-action="set_session_note">Enregistrer</button>'
         f'<span data-status></span></div>'
-        f'<p style="margin-top:2rem"><a class="btn" href="/">&larr; toutes les séances</a></p>'
+        + note_history_section(detail.get("note_history"))
+        + f'<p style="margin-top:2rem"><a class="btn" href="/">&larr; toutes les séances</a></p>'
     )
     return TEMPLATE.read_text().replace("__BODY__", body)
