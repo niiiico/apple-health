@@ -90,10 +90,19 @@ def context(store: Store, tz: tzinfo | None = None) -> dict:
                                  updated_at DESC""")
         docs = [{"slug": r["slug"], "body": r["body"],
                  "updated_at": r["updated_at"].isoformat()} for r in cur.fetchall()]
+        cur.execute("""SELECT target_key, count(*) n FROM revisions
+                        WHERE target = 'documents' GROUP BY target_key""")
+        doc_versions = {r["target_key"]: r["n"] for r in cur.fetchall()}
+        for d in docs:
+            d["versions"] = doc_versions.get(d["slug"], 0)
         plan = docs[0] if docs else None
-        cur.execute("SELECT id, goal, target_date FROM goals WHERE archived_at IS NULL"
-                    " ORDER BY target_date NULLS LAST, created_at")
-        goals = [{"id": r["id"], "goal": r["goal"],
+        cur.execute(
+            """SELECT g.id, g.goal, g.target_date,
+                      (SELECT count(*) FROM revisions v
+                        WHERE v.target = 'goals' AND v.target_key = g.id::text) AS versions
+                 FROM goals g WHERE g.archived_at IS NULL
+             ORDER BY g.target_date NULLS LAST, g.created_at""")
+        goals = [{"id": r["id"], "goal": r["goal"], "versions": r["versions"],
                   "target_date": r["target_date"].isoformat() if r["target_date"] else None}
                  for r in cur.fetchall()]
 
@@ -296,9 +305,10 @@ def session_detail(store: Store, workout_id: int, tz: tzinfo | None = None) -> d
 
     with store.cursor() as cur:
         cur.execute(
-            """SELECT note, archived_at, replaced_by FROM note_revisions
-                WHERE workout_id = %s ORDER BY archived_at DESC""", (workout_id,))
-        history_rows = [{"note": r["note"],
+            """SELECT body, archived_at, replaced_by FROM revisions
+                WHERE target = 'session_notes' AND target_key = %s
+             ORDER BY archived_at DESC""", (str(workout_id),))
+        history_rows = [{"note": r["body"],
                          "archived_at": r["archived_at"].isoformat(),
                          "replaced_by": r["replaced_by"]} for r in cur.fetchall()]
 
@@ -560,3 +570,19 @@ def chat_sessions(store: Store, limit: int = 60) -> dict:
              "turns": r["turns"],
              "first_question": r["first_question"]}
             for r in cur.fetchall()]}
+
+
+def revisions(store: Store, target: str, key: str) -> dict:
+    """Superseded versions of one note, goal or document, newest first.
+
+    What something used to say is often the interesting part: a goal reworded
+    in September says something about the block that the current text does not.
+    """
+    with store.cursor() as cur:
+        cur.execute(
+            """SELECT body, archived_at, replaced_by FROM revisions
+                WHERE target = %s AND target_key = %s
+             ORDER BY archived_at DESC""", (target, str(key)))
+        return {"target": target, "key": key, "versions": [
+            {"body": r["body"], "archived_at": r["archived_at"].isoformat(),
+             "replaced_by": r["replaced_by"]} for r in cur.fetchall()]}

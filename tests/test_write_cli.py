@@ -70,7 +70,7 @@ def test_the_advisor_may_run_only_these_two_commands():
 
 def test_a_note_records_what_it_replaced():
     """Losing something he wrote himself is the worst outcome available here."""
-    store = _Store([{"id": 5560}, {"note": "ancienne note"}])
+    store = _Store([{"id": 5560}, {"note": "ancienne note"}, {"body": "ancienne note"}])
     write_cli.write_note(store, 5560, "nouvelle note")
     audit = [p for s, p in store.cur.executed if "advisor_writes" in s]
     assert audit and audit[0][4] == '"ancienne note"'
@@ -98,19 +98,35 @@ def test_replacing_a_document_says_so_and_keeps_the_original():
     assert audit[4] == '"' + "x" * 6000 + '"'
 
 
-def test_a_goal_never_edits_an_existing_one():
-    """His goals are his words; the advisor may add, not rewrite."""
-    import inspect
-    source = inspect.getsource(write_cli.write_goal)
-    assert "UPDATE goals" not in source
-    assert "INSERT INTO goals" in source
+def test_amending_a_goal_keeps_the_previous_wording():
+    """A goal whose wording moves is the same goal.
+
+    Archiving one to write another loses the thread of what was being aimed at
+    and why it changed, which is most of what a goal's history is worth.
+    """
+    store = _Store([{"goal": "sub-3:05"}, {"body": "sub-3:05"}])
+    summary = write_cli.write_goal(store, "sub-3:00", None, goal_id=1)
+    sql = " | ".join(s for s, _ in store.cur.executed)
+    assert "INSERT INTO revisions" in sql and "UPDATE goals" in sql
+    assert "modifié" in summary
+
+
+def test_amending_an_unknown_goal_is_refused():
+    with pytest.raises(SystemExit, match="no active goal"):
+        write_cli.write_goal(_Store([None]), "x", None, goal_id=999)
+
+
+def test_a_document_keeps_what_it_replaced_as_a_version():
+    store = _Store([{"body": "ancien plan"}, {"body": "ancien plan"}])
+    write_cli.write_doc(store, "plan", "nouveau plan", append=False)
+    assert any("INSERT INTO revisions" in s for s, _ in store.cur.executed)
 
 
 # --- note history ------------------------------------------------------------
 
 def test_the_advisor_archives_before_replacing():
     """Both write paths archive; neither may be the one that forgets."""
-    store = _Store([{"id": 5560}, {"note": "ancienne"}, {"note": "ancienne"}])
+    store = _Store([{"id": 5560}, {"note": "ancienne"}, {"body": "ancienne"}])
     write_cli.write_note(store, 5560, "nouvelle")
     sql = " | ".join(s for s, _ in store.cur.executed)
-    assert "INSERT INTO note_revisions" in sql
+    assert "INSERT INTO revisions" in sql

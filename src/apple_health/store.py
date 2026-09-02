@@ -404,31 +404,75 @@ _MIGRATIONS: tuple[str, ...] = (
     CREATE INDEX note_revisions_workout
         ON note_revisions (workout_id, archived_at DESC);
     """,
+    # 13 — one revision table for everything a person writes.
+    #
+    # `note_revisions` was right and too narrow: goals and documents are the
+    # same kind of thing — words somebody chose — and were still being
+    # overwritten silently. Three parallel tables would have meant three places
+    # to forget, so it generalises instead. The old table is carried over and
+    # dropped rather than left beside its replacement.
+    #
+    # `target` names the table, `target_key` the row. Deliberately not a foreign
+    # key: a revision should outlive the thing it is a revision of, and a goal
+    # deleted outright should not take its own history with it.
+    """
+    CREATE TABLE revisions (
+        id          bigserial PRIMARY KEY,
+        target      text NOT NULL,
+        target_key  text NOT NULL,
+        body        text NOT NULL,
+        archived_at timestamptz NOT NULL DEFAULT now(),
+        replaced_by text NOT NULL
+    );
+
+    INSERT INTO revisions (target, target_key, body, archived_at, replaced_by)
+        SELECT 'session_notes', workout_id::text, note, archived_at, replaced_by
+          FROM note_revisions;
+
+    DROP TABLE note_revisions;
+
+    CREATE INDEX revisions_target
+        ON revisions (target, target_key, archived_at DESC);
+    """,
 )
 
 
-def archive_note(cur, workout_id: int, replaced_by: str) -> bool:
-    """Keep the current note before something replaces it.
+# What each versioned thing is called, and where its text lives.
+_VERSIONED = {
+    "session_notes": ("SELECT note AS body FROM session_notes WHERE workout_id = %s"),
+    "goals":         ("SELECT goal AS body FROM goals WHERE id = %s"),
+    "documents":     ("SELECT body FROM documents WHERE slug = %s"),
+}
 
-    Called by every path that writes `session_notes` — the athlete's form and
-    the advisor's tool alike. It lives here rather than in either of them
-    because a second write path that forgot to call it would lose exactly the
-    thing this exists to protect, and the loss would be silent.
 
-    Returns whether anything was archived; a blank or absent note is not a
-    version worth keeping.
+def archive(cur, target: str, key, replaced_by: str) -> bool:
+    """Keep the current text before something replaces it.
+
+    Called by every path that can overwrite a note, a goal or a document — the
+    athlete's forms and the advisor's tool alike. It lives here rather than in
+    any of them because a write path that forgot to call it would lose exactly
+    what this exists to protect, and lose it silently.
+
+    Returns whether anything was archived; blank or absent is not a version.
     """
-    cur.execute("SELECT note FROM session_notes WHERE workout_id = %s",
-                (workout_id,))
+    query = _VERSIONED.get(target)
+    if query is None:
+        raise ValueError(f"{target!r} is not versioned")
+    cur.execute(query, (key,))
     row = cur.fetchone()
-    previous = (row["note"] if row else "") or ""
+    previous = (row["body"] if row else "") or ""
     if not previous.strip():
         return False
     cur.execute(
-        """INSERT INTO note_revisions (workout_id, note, replaced_by)
-           VALUES (%s,%s,%s)""",
-        (workout_id, previous, replaced_by))
+        """INSERT INTO revisions (target, target_key, body, replaced_by)
+           VALUES (%s,%s,%s,%s)""",
+        (target, str(key), previous, replaced_by))
     return True
+
+
+def archive_note(cur, workout_id: int, replaced_by: str) -> bool:
+    """Archive a session note. Kept as a name because it reads better at use."""
+    return archive(cur, "session_notes", workout_id, replaced_by)
 
 
 @dataclass(frozen=True, slots=True)

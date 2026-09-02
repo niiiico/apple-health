@@ -32,7 +32,7 @@ import sys
 from datetime import date
 from typing import Any
 
-from .store import Store, archive_note
+from .store import Store, archive, archive_note
 
 _SESSION_VAR = "AH_WRITE_SESSION"
 
@@ -87,18 +87,37 @@ def write_note(store: Store, workout_id: int, text: str) -> str:
     return summary
 
 
-def write_goal(store: Store, text: str, target_date: date | None) -> str:
-    """Record a new goal. Never edits an existing one — those are his words."""
+def write_goal(store: Store, text: str, target_date: date | None,
+               goal_id: int | None = None) -> str:
+    """Record a goal, or amend one.
+
+    Editing is allowed now, and versioned: a goal whose wording moves is the
+    same goal, and archiving one to write another loses the thread of what was
+    being aimed at and why it changed.
+    """
     text = text.strip()
     if not text:
         raise SystemExit("goal text is required")
     with store.cursor() as cur:
-        cur.execute(
-            "INSERT INTO goals (goal, target_date) VALUES (%s,%s) RETURNING id",
-            (text, target_date))
-        goal_id = cur.fetchone()["id"]
-        summary = f"objectif #{goal_id} ajouté"
-        _record(cur, "goals", goal_id, summary, None,
+        if goal_id:
+            cur.execute("SELECT goal FROM goals WHERE id = %s AND archived_at IS NULL",
+                        (goal_id,))
+            row = cur.fetchone()
+            if row is None:
+                raise SystemExit(f"no active goal {goal_id}")
+            before = row["goal"]
+            archive(cur, "goals", goal_id, "advisor")
+            cur.execute("UPDATE goals SET goal = %s, target_date = %s WHERE id = %s",
+                        (text, target_date, goal_id))
+            summary = f"objectif #{goal_id} modifié"
+        else:
+            before = None
+            cur.execute(
+                "INSERT INTO goals (goal, target_date) VALUES (%s,%s) RETURNING id",
+                (text, target_date))
+            goal_id = cur.fetchone()["id"]
+            summary = f"objectif #{goal_id} ajouté"
+        _record(cur, "goals", goal_id, summary, before,
                 {"goal": text,
                  "target_date": target_date.isoformat() if target_date else None})
     store.commit()
@@ -119,6 +138,7 @@ def write_doc(store: Store, slug: str, text: str, append: bool) -> str:
         cur.execute("SELECT body FROM documents WHERE slug = %s", (slug,))
         row = cur.fetchone()
         before = row["body"] if row else None
+        archive(cur, "documents", slug, "advisor")
         body = (before or "").rstrip() + "\n\n" + text.strip() if append and before \
             else text.strip()
         cur.execute(
@@ -163,6 +183,8 @@ def main(argv: list[str] | None = None) -> int:
     g = sub.add_parser("goal", help="record a new goal")
     g.add_argument("--text", required=True)
     g.add_argument("--target-date", type=date.fromisoformat, default=None)
+    g.add_argument("--id", type=int, default=None,
+                   help="amend this goal instead of adding one")
 
     d = sub.add_parser("doc", help="write or extend a document")
     d.add_argument("--slug", required=True)
@@ -179,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "note":
             print(write_note(store, args.id, args.text))
         elif args.command == "goal":
-            print(write_goal(store, args.text, args.target_date))
+            print(write_goal(store, args.text, args.target_date, args.id))
         elif args.command == "doc":
             print(write_doc(store, args.slug, args.text, args.append))
         else:

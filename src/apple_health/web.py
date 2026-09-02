@@ -41,7 +41,7 @@ from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 from . import queries, tiles, ui
-from .store import Store, archive_note
+from .store import Store, archive, archive_note
 
 WINDOW_DAYS = 45
 
@@ -130,6 +130,10 @@ def set_goal(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
     goal = (payload.get("goal") or "").strip()
     if not goal:
         raise ValueError("goal text is required")
+    # An id turns this into an edit. Goals were add-only, so a wording change
+    # meant archiving one and writing another — which loses the thread of what
+    # was being aimed at and why it moved.
+    goal_id = payload.get("id")
     target = payload.get("target_date") or None
     # A past target_date is accepted: a goal whose date has gone is a real
     # state, and the advisor should say the race has been run rather than be
@@ -137,13 +141,25 @@ def set_goal(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
     target_date = _as_date(target, "target_date") if target else None
 
     with store.cursor() as cur:
-        cur.execute(
-            "INSERT INTO goals (goal, target_date) VALUES (%s,%s) RETURNING id",
-            (goal, target_date))
-        goal_id = cur.fetchone()["id"]
+        if goal_id:
+            goal_id = _as_int(goal_id, "id")
+            archive(cur, "goals", goal_id, "athlete")
+            cur.execute(
+                """UPDATE goals SET goal = %s, target_date = %s
+                    WHERE id = %s AND archived_at IS NULL""",
+                (goal, target_date, goal_id))
+            if cur.rowcount == 0:
+                raise ValueError(f"no active goal #{goal_id}")
+            verb = "modifié"
+        else:
+            cur.execute(
+                "INSERT INTO goals (goal, target_date) VALUES (%s,%s) RETURNING id",
+                (goal, target_date))
+            goal_id = cur.fetchone()["id"]
+            verb = "enregistré"
     store.commit()
-    when = f" by {target_date.isoformat()}" if target_date else ""
-    return {"message": f"goal #{goal_id} recorded{when}"}
+    when = f" — échéance {target_date.isoformat()}" if target_date else ""
+    return {"message": f"objectif #{goal_id} {verb}{when}"}
 
 
 def archive_goal(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
@@ -160,6 +176,32 @@ def archive_goal(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"no active goal #{goal_id}")
     store.commit()
     return {"message": f"goal #{goal_id} archived"}
+
+
+def set_document(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
+    """Write a document from the site, keeping what it replaced.
+
+    The race plan was only ever writable by the advisor or by a script. Editing
+    the thing the whole training block is organised around should not require
+    either.
+    """
+    slug = (payload.get("slug") or "").strip()
+    body = (payload.get("body") or "").strip()
+    if not slug:
+        raise ValueError("slug is required")
+    if not body:
+        raise ValueError("body is required")
+
+    with store.cursor() as cur:
+        existed = archive(cur, "documents", slug, "athlete")
+        cur.execute(
+            """INSERT INTO documents (slug, body, volatility, updated_at)
+               VALUES (%s,%s,'high',now())
+               ON CONFLICT (slug) DO UPDATE SET
+                   body = excluded.body, updated_at = now()""",
+            (slug, body))
+    store.commit()
+    return {"message": f"« {slug} » {'mis à jour' if existed else 'créé'}"}
 
 
 def set_session_note(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
@@ -326,6 +368,7 @@ ACTIONS: dict[str, Callable[[Store, dict[str, Any]], dict[str, Any]]] = {
     "chat": chat,
     "retry_turn": retry_turn,
     "set_goal": set_goal,
+    "set_document": set_document,
     "archive_goal": archive_goal,
     "set_session_note": set_session_note,
     "set_period_note": set_period_note,
@@ -462,6 +505,19 @@ def job_state(job_id: str) -> dict[str, Any]:
     return job
 
 
+def render_versions_page(store: Store, target: str, key: str) -> str:
+    """Superseded versions of one note, goal or document."""
+    got = queries.revisions(store, target, key)
+    label = key
+    if target == "goals":
+        with store.cursor() as cur:
+            cur.execute("SELECT goal FROM goals WHERE id = %s", (key,))
+            row = cur.fetchone()
+            if row:
+                label = row["goal"][:60]
+    return ui.render_versions(target, key, got["versions"], label)
+
+
 def render_chats_page(store: Store) -> str:
     """The conversation list."""
     return ui.render_chats(queries.chat_sessions(store)["sessions"])
@@ -551,7 +607,15 @@ def handler_for(dsn: str | None, window_days: int = WINDOW_DAYS):
                 return self._json(200, {"ok": True, "observed_through":
                                         observed.isoformat() if observed else None})
             parsed = urlparse(self.path)
-            if parsed.path == "/chat" or parsed.path == "/chat/":
+            if parsed.path.startswith("/versions/"):
+                parts = parsed.path.removeprefix("/versions/").split("/", 1)
+                if len(parts) != 2 or parts[0] not in ("goals", "documents",
+                                                       "session_notes"):
+                    return self._send(404, b"not found", "text/plain; charset=utf-8")
+                target, key = parts
+                render = lambda store: render_versions_page(  # noqa: E731
+                    store, target, key)
+            elif parsed.path == "/chat" or parsed.path == "/chat/":
                 render = render_chats_page
             elif parsed.path == "/chat/new":
                 render = lambda store: ui.render_chat(None, [])  # noqa: E731

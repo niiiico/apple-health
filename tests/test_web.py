@@ -165,14 +165,14 @@ def test_a_note_on_an_unknown_workout_is_refused():
 
 
 def test_an_emptied_note_deletes_rather_than_storing_blank():
-    store = _Store(answers=[{"?column?": 1}, {"note": "douleur hanche droite"}])
+    store = _Store(answers=[{"?column?": 1}, {"body": "douleur hanche droite"}])
     msg = web.set_session_note(store, {"workout_id": 1, "note": "  "})
     assert "effacée" in msg["message"]
     sql = " | ".join(s for s, _ in store.cur.executed)
     assert "DELETE FROM session_notes" in sql
     # Clearing the box was the easiest way to lose a note, and it left nothing
     # behind at all. The superseded text is kept.
-    assert "INSERT INTO note_revisions" in sql
+    assert "INSERT INTO revisions" in sql
 
 
 # --- rendering ---------------------------------------------------------------
@@ -589,15 +589,26 @@ def test_the_error_page_hides_the_message_and_keeps_the_class():
 def test_the_archiver_skips_a_blank_previous_note():
     """An empty note is not a version worth keeping."""
     from apple_health.store import archive_note
-    cur = _Cur([{"note": "   "}])
+    cur = _Cur([{"body": "   "}])
     assert archive_note(cur, 1, "athlete") is False
-    assert not any("note_revisions" in s for s, _ in cur.executed)
+    assert not any("INSERT INTO revisions" in s for s, _ in cur.executed)
 
 
 def test_the_archiver_keeps_a_real_previous_note():
     from apple_health.store import archive_note
-    cur = _Cur([{"note": "douleur hanche droite"}])
+    cur = _Cur([{"body": "douleur hanche droite"}])
     assert archive_note(cur, 1, "advisor") is True
     sql, params = cur.executed[-1]
-    assert "INSERT INTO note_revisions" in sql
-    assert params == (1, "douleur hanche droite", "advisor")
+    assert "INSERT INTO revisions" in sql
+    assert params == ("session_notes", "1", "douleur hanche droite", "advisor")
+
+
+def test_the_versions_page_renders_what_something_used_to_say():
+    page = ui.render_versions("goals", "1", [
+        {"body": "sub-3:05", "archived_at": "2026-09-01T10:00:00",
+         "replaced_by": "athlete"}], label="sub-3:00")
+    assert "sub-3:05" in page and "toi" in page
+
+
+def test_an_empty_version_history_still_renders():
+    assert "Aucune version" in ui.render_versions("goals", "1", [])

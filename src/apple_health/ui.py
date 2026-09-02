@@ -110,9 +110,22 @@ def plan_section(plan: dict | None) -> str:
     from no page in the app.
     """
     if plan and plan.get("body"):
-        body = (f'<details class="card" open><summary>{_esc(plan["slug"])} — '
+        versions = (f'<a class="note" href="/versions/documents/{_esc(plan["slug"])}">'
+                    f'{plan.get("versions", 0)} version(s) précédente(s) →</a>'
+                    if plan.get("versions") else "")
+        body = (f'<details class="card"><summary>{_esc(plan["slug"])} — '
                 f'{_esc(plan["updated_at"][:10])}</summary>'
-                f'<div class="doc">{_esc(plan["body"])}</div></details>')
+                f'<div class="doc">{_esc(plan["body"])}</div>'
+                # Editable here rather than only by the advisor or a script:
+                # the document the whole block is organised around should not
+                # need either to change a line.
+                f'<div data-card><input type="hidden" data-field="slug" '
+                f'value="{_esc(plan["slug"])}">'
+                f'<textarea data-field="body" rows="10">{_esc(plan["body"])}</textarea>'
+                f'<button data-action="set_document" data-reload="1" '
+                f'data-confirm="Remplacer ce document ? La version actuelle sera '
+                f'conservée.">Enregistrer</button> {versions}'
+                f'<span data-status></span></div></details>')
         label = "Reecrire le plan"
     else:
         body = ('<p class="note">Aucun plan. Il sera redige a partir des '
@@ -204,9 +217,19 @@ def goals_section(goals: list[dict]) -> str:
         for g in goals:
             when = (f'<span class="note">echeance {_esc(g["target_date"])}</span>'
                     if g.get("target_date") else "")
+            versions = (f'<a class="note" href="/versions/goals/{int(g["id"])}">'
+                        f'{g["versions"]} version(s) précédente(s) →</a>'
+                        if g.get("versions") else "")
             cards += (
                 f'<div class="card" data-card>'
-                f'<p>{_esc(g["goal"])}</p>{when} '
+                # Editable in place. A goal was add-only, so changing a word
+                # meant archiving one and writing another.
+                f'<textarea data-field="goal" rows="3">{_esc(g["goal"])}</textarea>'
+                f'<label>echeance<input data-field="target_date" type="date" '
+                f'value="{_esc(g.get("target_date") or "")}"></label>'
+                f'<input type="hidden" data-field="id" value="{int(g["id"])}">'
+                f'<button data-action="set_goal" data-reload="1">Enregistrer</button> '
+                f'{when} {versions} '
                 # Quiet, and it asks first. It was the loudest control in the
                 # section, unconfirmed, on a cramped touch row — one fat-finger
                 # tap permanently archived the race goal, with no undo anywhere.
@@ -345,6 +368,22 @@ def note_history_section(history: list[dict] | None) -> str:
         for h in history)
     return (f'<details class="card"><summary>Versions précédentes '
             f"({len(history)})</summary>{rows}</details>")
+
+
+def render_versions(target: str, key: str, versions: list[dict],
+                    label: str = "") -> str:
+    """Superseded versions of one thing, newest first."""
+    rows = "".join(
+        f'<div class="card"><div class="doc">{_esc(v["body"])}</div>'
+        f'<p class="note">remplacée le '
+        f'{_esc(v["archived_at"][:16].replace("T", " "))} '
+        f'({"toi" if v["replaced_by"] == "athlete" else "l\'assistant"})</p></div>'
+        for v in versions)
+    if not rows:
+        rows = '<p class="note">Aucune version précédente.</p>'
+    return TEMPLATE.read_text().replace("__BODY__", (
+        f"<h1>Versions — {_esc(label or key)}</h1>"
+        f'<p><a class="btn" href="/">&larr; retour</a></p>{rows}'))
 
 
 def render_error(exc: Exception) -> str:
