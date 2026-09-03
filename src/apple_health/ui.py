@@ -157,22 +157,41 @@ def _turn_html(turn: dict, editable: bool = False) -> str:
             f'<div class="note">{when}</div></div>')
 
 
-def render_chats(sessions: list[dict]) -> str:
-    """The conversation list: one row per thread, newest first."""
+def render_chats(sessions: list[dict], archived: bool = False) -> str:
+    """The conversation list: one row per thread, newest first.
+
+    Archiving is per row and does not confirm: it hides, and the archive is one
+    link away. A confirmation for something reversible is a tax on the common
+    case — unlike rewriting a question, which destroys the answers after it.
+    """
     if sessions:
-        rows = "".join(
-            f'<a class="chatrow" href="/chat/{_esc(s["session_id"])}">'
-            f'<span class="q">{_esc(s["first_question"])}</span>'
-            f'<span class="note">{_esc(s["last_at"][:16].replace("T", " "))} · '
-            f'{s["turns"]} échange(s)</span></a>'
-            for s in sessions)
+        rows = ""
+        for s in sessions:
+            label = "restaurer" if archived else "archiver"
+            rows += (
+                f'<div class="chatrow">'
+                f'<a href="/chat/{_esc(s["session_id"])}">'
+                f'<span class="q">{_esc(s["first_question"])}</span>'
+                f'<span class="note">{_esc(s["last_at"][:16].replace("T", " "))} · '
+                f'{s["turns"]} échange(s)</span></a>'
+                f'<span data-card><input type="hidden" data-field="session_id" '
+                f'value="{_esc(s["session_id"])}">'
+                + (f'<input type="hidden" data-field="restore" value="1">'
+                   if archived else "")
+                + f'<button class="ghost" data-action="archive_chat" '
+                  f'data-reload="1">{label}</button>'
+                  f"<span data-status></span></span></div>")
+    elif archived:
+        rows = '<p class="note">Aucune conversation archivée.</p>'
     else:
         rows = ('<p class="note">Aucune conversation. Pose une question depuis '
                 "la page d'accueil ou ci-dessous.</p>")
+    other = ('<a class="btn" href="/chat">← discussions</a>' if archived
+             else '<a class="btn" href="/chat?archived=1">Archivées</a>')
     body = (
-        "<h1>Discussions</h1>"
+        f"<h1>{'Discussions archivées' if archived else 'Discussions'}</h1>"
         f'<p><a class="btn" href="/chat/new">Nouvelle conversation</a> '
-        f'<a class="btn" href="/">← séances</a></p>'
+        f'{other} <a class="btn" href="/">← séances</a></p>'
         f'<div class="card">{rows}</div>')
     return TEMPLATE.read_text().replace("__BODY__", body)
 
@@ -189,7 +208,13 @@ def render_chat(session_id: str | None, turns: list[dict]) -> str:
     title = _esc(turns[0]["question"][:70]) if turns else "Nouvelle conversation"
     body = (
         f"<h1>{title}</h1>"
-        f'<p><a class="btn" href="/chat">← discussions</a></p>'
+        f'<p><a class="btn" href="/chat">← discussions</a>'
+        + (f'<span data-card><input type="hidden" data-field="session_id" '
+           f'value="{_esc(session_id)}">'
+           f'<button class="ghost" data-action="archive_chat" '
+           f'data-reload="1">archiver</button><span data-status></span></span>'
+           if session_id else "")
+        + "</p>"
         f'<div class="transcript full" data-transcript>{transcript}</div>'
         f'<div class="card chat" data-card data-chat'
         + (f' data-session="{_esc(session_id)}"' if session_id else "")

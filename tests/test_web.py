@@ -612,3 +612,43 @@ def test_the_versions_page_renders_what_something_used_to_say():
 
 def test_an_empty_version_history_still_renders():
     assert "Aucune version" in ui.render_versions("goals", "1", [])
+
+
+# --- archiving a conversation ------------------------------------------------
+
+def test_archiving_a_conversation_keeps_every_turn():
+    """Removed from the list is not removed from the record."""
+    store = _Store()
+    store.cur.rowcount = 3
+    out = web.archive_chat(store, {"session_id": "s1"})
+    sql, params = store.cur.executed[0]
+    assert "UPDATE chat_turns SET archived_at" in sql
+    assert "DELETE" not in sql
+    assert params[1] == "s1" and params[0] is not None
+    assert "archivée" in out["message"] and store.committed
+
+
+def test_restoring_clears_the_archive_stamp():
+    store = _Store()
+    store.cur.rowcount = 3
+    out = web.archive_chat(store, {"session_id": "s1", "restore": True})
+    _sql, params = store.cur.executed[0]
+    assert params[0] is None
+    assert "restaurée" in out["message"]
+
+
+def test_archiving_an_unknown_conversation_is_refused():
+    store = _Store()
+    store.cur.rowcount = 0
+    with pytest.raises(ValueError, match="no conversation"):
+        web.archive_chat(store, {"session_id": "nope"})
+
+
+def test_the_archived_list_says_so_when_empty():
+    page = ui.render_chats([], archived=True)
+    assert "Aucune conversation archivée" in page
+    assert "← discussions" in page
+
+
+def test_the_live_list_links_to_the_archive():
+    assert "/chat?archived=1" in ui.render_chats([])

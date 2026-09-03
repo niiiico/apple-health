@@ -71,7 +71,8 @@ def context(store: Store, tz: tzinfo | None = None) -> dict:
         cur.execute("SELECT min(started_at) lo, max(started_at) hi, count(*) n FROM workouts")
         span = cur.fetchone()
         cur.execute("""SELECT session_id, asked_at, question, answer, queries
-                         FROM chat_turns ORDER BY asked_at DESC LIMIT 30""")
+                         FROM chat_turns WHERE archived_at IS NULL
+                     ORDER BY asked_at DESC LIMIT 30""")
         history = [{"session_id": r["session_id"],
                     "asked_at": r["asked_at"].isoformat(),
                     "question": r["question"], "answer": r["answer"],
@@ -546,23 +547,30 @@ def chat_history(store: Store, limit: int = 40,
     }
 
 
-def chat_sessions(store: Store, limit: int = 60) -> dict:
+def chat_sessions(store: Store, limit: int = 60,
+                  archived: bool = False) -> dict:
     """One row per conversation, newest first.
 
     Grouped in SQL rather than in Python so the list stays cheap as the history
     grows: only the first question and the counts are needed to draw it.
+
+    Archived threads are excluded by default and reachable on request — removed
+    from the list is not removed from the record, and the difference should be
+    one parameter rather than one deletion.
     """
+    where = "archived_at IS NOT NULL" if archived else "archived_at IS NULL"
     with store.cursor() as cur:
         cur.execute(
-            """SELECT session_id,
-                      min(asked_at) AS started_at,
-                      max(asked_at) AS last_at,
-                      count(*)      AS turns,
-                      (array_agg(question ORDER BY asked_at))[1] AS first_question
-                 FROM chat_turns
-             GROUP BY session_id
-             ORDER BY max(asked_at) DESC
-                LIMIT %s""", (limit,))
+            f"""SELECT session_id,
+                       min(asked_at) AS started_at,
+                       max(asked_at) AS last_at,
+                       count(*)      AS turns,
+                       (array_agg(question ORDER BY asked_at))[1] AS first_question
+                  FROM chat_turns
+                 WHERE {where}
+              GROUP BY session_id
+              ORDER BY max(asked_at) DESC
+                 LIMIT %s""", (limit,))
         return {"sessions": [
             {"session_id": r["session_id"],
              "started_at": r["started_at"].isoformat(),

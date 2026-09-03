@@ -101,10 +101,13 @@
                 font:inherit; font-size:.85em; opacity:.65; cursor:pointer;
                 text-decoration:underline; width:auto }
   .transcript.full { max-height:none }
-  a.chatrow { display:flex; flex-direction:column; gap:.15rem; padding:.6rem .2rem;
-              border-bottom:1px solid rgba(127,127,127,.25); text-decoration:none }
-  a.chatrow:last-child { border-bottom:none }
-  a.chatrow .q { font-weight:600 }
+  .chatrow { display:flex; align-items:center; gap:.6rem; padding:.6rem .2rem;
+             border-bottom:1px solid rgba(127,127,127,.25) }
+  .chatrow:last-child { border-bottom:none }
+  .chatrow a { flex:1; display:flex; flex-direction:column; gap:.15rem;
+               text-decoration:none; color:inherit; min-width:0 }
+  .chatrow .q { font-weight:600; color:var(--accent) }
+  .chatrow button { width:auto; margin:0; flex:none }
   .doc { white-space:pre-wrap; line-height:1.5 }
   svg.route { width:100%; max-width:26rem; height:auto; display:block; margin:0 auto .6rem }
   .mapwrap { width:100%; max-width:30rem; margin:0 auto .4rem; overflow:hidden;

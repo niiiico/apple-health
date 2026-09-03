@@ -64,6 +64,30 @@ def _as_date(value: Any, field: str) -> date:
         raise ValueError(f"{field} must be an ISO date, got {value!r}") from None
 
 
+def archive_chat(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
+    """Take a conversation out of the list, keeping every word of it.
+
+    Nothing is deleted. An answer acted on months ago is evidence of why
+    something was done, and a cluttered list is a different problem from a
+    record with holes in it — hiding solves the first without causing the
+    second. `/chat?archived=1` is where they go, not nowhere.
+    """
+    session_id = (payload.get("session_id") or "").strip()
+    if not session_id:
+        raise ValueError("session_id is required")
+    restore = bool(payload.get("restore"))
+    with store.cursor() as cur:
+        cur.execute(
+            "UPDATE chat_turns SET archived_at = %s WHERE session_id = %s",
+            (None if restore else datetime.now().astimezone(), session_id))
+        n = cur.rowcount
+    if not n:
+        raise ValueError(f"no conversation {session_id}")
+    store.commit()
+    return {"message": f"conversation {'restaurée' if restore else 'archivée'} "
+                       f"({n} échange(s))"}
+
+
 def retry_turn(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
     """Rewrite a question and answer it again, dropping everything after it.
 
@@ -366,6 +390,7 @@ ACTIONS: dict[str, Callable[[Store, dict[str, Any]], dict[str, Any]]] = {
     "review_session": review_session,
     "write_plan": write_plan,
     "chat": chat,
+    "archive_chat": archive_chat,
     "retry_turn": retry_turn,
     "set_goal": set_goal,
     "set_document": set_document,
@@ -518,9 +543,10 @@ def render_versions_page(store: Store, target: str, key: str) -> str:
     return ui.render_versions(target, key, got["versions"], label)
 
 
-def render_chats_page(store: Store) -> str:
-    """The conversation list."""
-    return ui.render_chats(queries.chat_sessions(store)["sessions"])
+def render_chats_page(store: Store, archived: bool = False) -> str:
+    """The conversation list, live or archived."""
+    return ui.render_chats(
+        queries.chat_sessions(store, archived=archived)["sessions"], archived)
 
 
 def render_chat_page(store: Store, session_id: str) -> str:
@@ -616,7 +642,8 @@ def handler_for(dsn: str | None, window_days: int = WINDOW_DAYS):
                 render = lambda store: render_versions_page(  # noqa: E731
                     store, target, key)
             elif parsed.path == "/chat" or parsed.path == "/chat/":
-                render = render_chats_page
+                archived = parse_qs(parsed.query).get("archived") == ["1"]
+                render = lambda store: render_chats_page(store, archived)  # noqa: E731
             elif parsed.path == "/chat/new":
                 render = lambda store: ui.render_chat(None, [])  # noqa: E731
             elif parsed.path.startswith("/chat/"):

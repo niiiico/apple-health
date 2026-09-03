@@ -434,6 +434,18 @@ _MIGRATIONS: tuple[str, ...] = (
     CREATE INDEX revisions_target
         ON revisions (target, target_key, archived_at DESC);
     """,
+    # 14 — conversations can leave the list without leaving the record.
+    #
+    # Archived rather than deleted, for the same reason goals are: an answer
+    # acted on months ago is evidence of why something was done, and a list
+    # cluttered with dead threads is a different problem from a record with
+    # holes in it. Hiding solves the first without creating the second.
+    """
+    ALTER TABLE chat_turns ADD COLUMN archived_at timestamptz;
+
+    CREATE INDEX chat_turns_live ON chat_turns (asked_at DESC)
+        WHERE archived_at IS NULL;
+    """,
 )
 
 
