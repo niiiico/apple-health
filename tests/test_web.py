@@ -652,3 +652,40 @@ def test_the_archived_list_says_so_when_empty():
 
 def test_the_live_list_links_to_the_archive():
     assert "/chat?archived=1" in ui.render_chats([])
+
+
+# --- the profile -------------------------------------------------------------
+
+def test_the_profile_is_versioned_like_everything_else_he_writes():
+    """A philosophy of training that changes is worth looking back at."""
+    store = _Store([{"body": "ancien parcours"}])
+    web.set_profile(store, {"born_on": "1979-04-12", "background": "22 ans de course"})
+    sql = " | ".join(s for s, _ in store.cur.executed)
+    assert "INSERT INTO revisions" in sql
+    assert "INSERT INTO profile" in sql and store.committed
+
+
+def test_the_profile_accepts_being_mostly_empty():
+    """He should be able to fill it in over time, not all at once."""
+    store = _Store([None])
+    assert "profil" in web.set_profile(store, {"philosophy": "constance"})["message"]
+
+
+def test_a_bad_birth_date_is_refused_rather_than_stored():
+    with pytest.raises(ValueError, match="ISO date"):
+        web.set_profile(_Store([None]), {"born_on": "avril 79"})
+
+
+def test_forgetting_archives_rather_than_deletes():
+    store = _Store()
+    store.cur.rowcount = 1
+    web.forget_memory(store, {"id": 3})
+    sql, _ = store.cur.executed[0]
+    assert "SET archived_at" in sql and "DELETE" not in sql
+
+
+def test_forgetting_an_unknown_memory_is_refused():
+    store = _Store()
+    store.cur.rowcount = 0
+    with pytest.raises(ValueError, match="no active memory"):
+        web.forget_memory(store, {"id": 999})

@@ -230,6 +230,46 @@ def render_chat(session_id: str | None, turns: list[dict]) -> str:
     return TEMPLATE.read_text().replace("__BODY__", body)
 
 
+def athlete_section(athlete: dict | None, memory: list[dict] | None) -> str:
+    """Who he is, and what the advisor has learned.
+
+    This was the missing half of every answer the advisor gave. It read numbers
+    and knew nothing else — not an age, not twenty-three years of training, not
+    a diagnosis that explains a dip visible in his own data. Advice written
+    without that is not neutral, and it reads cold because it is addressed to a
+    stranger.
+    """
+    a = athlete or {}
+    age = f' <span class="note">{a["age"]} ans</span>' if a.get("age") else ""
+    mem = ""
+    for m in (memory or [])[:12]:
+        mem += (f'<div class="turn claude">{_esc(m["note"])}'
+                f'<div class="note">{_esc(m["learned_at"][:10])}</div></div>')
+    mem_block = (f'<details class="card"><summary>Ce que l\'assistant a retenu '
+                 f'({len(memory or [])})</summary>{mem}</details>' if memory else "")
+
+    return f"""<h2>Profil{age}</h2>
+<div class="card" data-card>
+  <label>naissance<input data-field="born_on" type="date"
+    value="{_esc(a.get("born_on") or "")}"></label>
+  <label>parcours
+    <textarea data-field="background" rows="4"
+      placeholder="depuis quand, quelles disciplines, blessures et antécédents qui comptent…"
+      >{_esc(a.get("background"))}</textarea></label>
+  <label>philosophie d'entraînement
+    <textarea data-field="philosophy" rows="3"
+      placeholder="comment tu abordes l'entraînement, ce qui compte pour toi…"
+      >{_esc(a.get("philosophy"))}</textarea></label>
+  <label>contraintes
+    <textarea data-field="constraints" rows="3"
+      placeholder="santé, disponibilité, ce qu'il faut éviter…"
+      >{_esc(a.get("constraints"))}</textarea></label>
+  <button data-action="set_profile" data-reload="1">Enregistrer</button>
+  <span data-status></span>
+</div>
+{mem_block}"""
+
+
 def goals_section(goals: list[dict]) -> str:
     """What he is training for, one card each.
 
@@ -488,6 +528,7 @@ def render(context: dict, sessions: list[dict], start: date, end: date) -> str:
         + window_nav(start, end, context["record"])
         + plan_section(context.get("plan"))
         + goals_section(context["goals"])
+        + athlete_section(context.get("athlete"), context.get("memory"))
         + period_notes_section(context["period_notes"])
         + zone_bands_section(context["zone_model"])
         + "<footer>Ce que la montre n'enregistre pas se note ici.</footer>"

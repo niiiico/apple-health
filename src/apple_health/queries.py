@@ -70,6 +70,24 @@ def context(store: Store, tz: tzinfo | None = None) -> dict:
                   "note": r["note"]} for r in cur.fetchall()]
         cur.execute("SELECT min(started_at) lo, max(started_at) hi, count(*) n FROM workouts")
         span = cur.fetchone()
+        cur.execute("""SELECT born_on, background, philosophy, constraints
+                         FROM profile WHERE id = 1""")
+        row = cur.fetchone()
+        athlete = None
+        if row:
+            athlete = {k: row[k] for k in
+                       ("background", "philosophy", "constraints") if row[k]}
+            if row["born_on"]:
+                born = row["born_on"]
+                today = date.today()
+                athlete["born_on"] = born.isoformat()
+                athlete["age"] = (today.year - born.year
+                                  - ((today.month, today.day) < (born.month, born.day)))
+        cur.execute("""SELECT note, learned_at FROM advisor_memory
+                        WHERE archived_at IS NULL ORDER BY learned_at DESC LIMIT 40""")
+        memory = [{"note": r["note"], "learned_at": r["learned_at"].isoformat()}
+                  for r in cur.fetchall()]
+
         cur.execute("""SELECT session_id, asked_at, question, answer, queries
                          FROM chat_turns WHERE archived_at IS NULL
                      ORDER BY asked_at DESC LIMIT 30""")
@@ -120,6 +138,10 @@ def context(store: Store, tz: tzinfo | None = None) -> dict:
         # the same as "no goals", and advice given without one should say so
         # rather than inventing a plausible objective to advise towards.
         "goals": goals,
+        # Who he is. Absent for years, and its absence is why advice read like
+        # it was written to a stranger.
+        "athlete": athlete,
+        "memory": memory,
         "plan": plan,
         "documents": docs,
         "chat_history": history,

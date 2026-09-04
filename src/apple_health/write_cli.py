@@ -158,6 +158,45 @@ def write_doc(store: Store, slug: str, text: str, append: bool) -> str:
     return summary
 
 
+def write_memory(store: Store, text: str) -> str:
+    """Record something durable the advisor worked out.
+
+    For facts that outlive a conversation and should not have to be re-derived —
+    that a pool is 25 m, that a course is hard, that a pain in one hip recurs
+    under load. Not for opinions about a single session: that is a review.
+
+    Kept apart from the profile because the profile is his words and this is the
+    advisor's, and a month later nothing else would tell them apart.
+    """
+    text = text.strip()
+    if not text:
+        raise SystemExit("memory text is required")
+    with store.cursor() as cur:
+        cur.execute(
+            "INSERT INTO advisor_memory (note, session_id) VALUES (%s,%s) RETURNING id",
+            (text, os.environ.get(_SESSION_VAR)))
+        mem_id = cur.fetchone()["id"]
+        summary = f"mémoire #{mem_id} enregistrée"
+        _record(cur, "advisor_memory", mem_id, summary, None, {"note": text})
+    store.commit()
+    return summary
+
+
+def forget_memory(store: Store, mem_id: int) -> str:
+    """Archive a remembered fact that turned out to be wrong or stale."""
+    with store.cursor() as cur:
+        cur.execute(
+            """UPDATE advisor_memory SET archived_at = now()
+                WHERE id = %s AND archived_at IS NULL RETURNING note""", (mem_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise SystemExit(f"no active memory {mem_id}")
+        summary = f"mémoire #{mem_id} archivée"
+        _record(cur, "advisor_memory", mem_id, summary, {"note": row["note"]}, None)
+    store.commit()
+    return summary
+
+
 def recent(store: Store, limit: int) -> dict:
     """What has been changed, most recent first."""
     with store.cursor() as cur:
@@ -192,6 +231,12 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--append", action="store_true",
                    help="add to the end rather than replacing the whole document")
 
+    m = sub.add_parser("memory", help="record something durable you worked out")
+    m.add_argument("--text", required=True)
+
+    f = sub.add_parser("forget", help="archive a remembered fact")
+    f.add_argument("--id", type=int, required=True)
+
     c = sub.add_parser("changes", help="what has been changed recently")
     c.add_argument("--limit", type=int, default=10)
 
@@ -202,6 +247,10 @@ def main(argv: list[str] | None = None) -> int:
             print(write_note(store, args.id, args.text))
         elif args.command == "goal":
             print(write_goal(store, args.text, args.target_date, args.id))
+        elif args.command == "memory":
+            print(write_memory(store, args.text))
+        elif args.command == "forget":
+            print(forget_memory(store, args.id))
         elif args.command == "doc":
             print(write_doc(store, args.slug, args.text, args.append))
         else:

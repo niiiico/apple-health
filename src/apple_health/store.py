@@ -446,6 +446,45 @@ _MIGRATIONS: tuple[str, ...] = (
     CREATE INDEX chat_turns_live ON chat_turns (asked_at DESC)
         WHERE archived_at IS NULL;
     """,
+    # 15 — who the athlete is, and what the advisor has learned about him.
+    #
+    # The advisor read numbers and knew nothing else: not his age, not that he
+    # has trained for twenty-three years, not that he was diagnosed with
+    # rheumatoid arthritis in 2024 and has been in remission since late that
+    # year — which is the explanation for a dip plainly visible in his own data
+    # and which it had no way to know. Advice given without that is not neutral,
+    # it is wrong, and it reads cold because it is talking to a stranger.
+    #
+    # `profile` is one row, free text apart from the birth date, which is a date
+    # because age gets computed from it. Free text for the rest for the same
+    # reason goals are: a philosophy of training is a paragraph, not an enum.
+    #
+    # `advisor_memory` is what it works out and should not have to work out
+    # again. Separate from the profile because the profile is his words and this
+    # is the advisor's — the same separation as notes and reviews, and for the
+    # same reason: a month later nobody can tell them apart otherwise.
+    """
+    CREATE TABLE profile (
+        id           int PRIMARY KEY DEFAULT 1,
+        born_on      date,
+        background   text,
+        philosophy   text,
+        constraints  text,
+        updated_at   timestamptz NOT NULL DEFAULT now(),
+        CONSTRAINT profile_is_one_row CHECK (id = 1)
+    );
+
+    CREATE TABLE advisor_memory (
+        id          bigserial PRIMARY KEY,
+        note        text NOT NULL,
+        learned_at  timestamptz NOT NULL DEFAULT now(),
+        session_id  text,
+        archived_at timestamptz
+    );
+
+    CREATE INDEX advisor_memory_live ON advisor_memory (learned_at DESC)
+        WHERE archived_at IS NULL;
+    """,
 )
 
 
@@ -454,6 +493,8 @@ _VERSIONED = {
     "session_notes": ("SELECT note AS body FROM session_notes WHERE workout_id = %s"),
     "goals":         ("SELECT goal AS body FROM goals WHERE id = %s"),
     "documents":     ("SELECT body FROM documents WHERE slug = %s"),
+    "profile":       ("SELECT concat_ws(E'\\n\\n', background, philosophy,"
+                      " constraints) AS body FROM profile WHERE id = %s"),
 }
 
 

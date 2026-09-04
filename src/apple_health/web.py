@@ -202,6 +202,46 @@ def archive_goal(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
     return {"message": f"goal #{goal_id} archived"}
 
 
+def set_profile(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
+    """Who the athlete is, in his own words.
+
+    Versioned like everything else he writes: a philosophy of training that
+    changes is worth being able to look back at.
+    """
+    born = payload.get("born_on") or None
+    born_on = _as_date(born, "born_on") if born else None
+    fields = {k: (payload.get(k) or "").strip()
+              for k in ("background", "philosophy", "constraints")}
+
+    with store.cursor() as cur:
+        archive(cur, "profile", 1, "athlete")
+        cur.execute(
+            """INSERT INTO profile (id, born_on, background, philosophy,
+                                    constraints, updated_at)
+               VALUES (1,%s,%s,%s,%s,now())
+               ON CONFLICT (id) DO UPDATE SET
+                   born_on = excluded.born_on, background = excluded.background,
+                   philosophy = excluded.philosophy,
+                   constraints = excluded.constraints, updated_at = now()""",
+            (born_on, fields["background"] or None, fields["philosophy"] or None,
+             fields["constraints"] or None))
+    store.commit()
+    return {"message": "profil enregistré"}
+
+
+def forget_memory(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
+    """Archive something the advisor remembered. Never deletes it."""
+    mem_id = _as_int(payload.get("id"), "id")
+    with store.cursor() as cur:
+        cur.execute(
+            """UPDATE advisor_memory SET archived_at = now()
+                WHERE id = %s AND archived_at IS NULL""", (mem_id,))
+        if cur.rowcount == 0:
+            raise ValueError(f"no active memory #{mem_id}")
+    store.commit()
+    return {"message": f"mémoire #{mem_id} oubliée"}
+
+
 def set_document(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
     """Write a document from the site, keeping what it replaced.
 
@@ -394,6 +434,8 @@ ACTIONS: dict[str, Callable[[Store, dict[str, Any]], dict[str, Any]]] = {
     "retry_turn": retry_turn,
     "set_goal": set_goal,
     "set_document": set_document,
+    "set_profile": set_profile,
+    "forget_memory": forget_memory,
     "archive_goal": archive_goal,
     "set_session_note": set_session_note,
     "set_period_note": set_period_note,
