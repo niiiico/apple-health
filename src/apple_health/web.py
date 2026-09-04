@@ -521,16 +521,17 @@ def start_job(dsn: str | None, name: str, payload: dict[str, Any]) -> str:
         # the request's would corrupt both.
         store = None
         outcome: dict[str, Any] = {
-            "state": "failed", "error": "le job s'est arrêté sans rien dire"}
+            "action": name, "state": "failed",
+            "error": "le job s'est arrêté sans rien dire"}
         try:
             store = Store(dsn)
-            outcome = {"state": "done",
+            outcome = {"action": name, "state": "done",
                        "result": ACTIONS[name](store, {**payload,
                                                        "_progress": note_progress})}
         except ValueError as exc:
-            outcome = {"state": "failed", "error": str(exc)}
+            outcome = {"action": name, "state": "failed", "error": str(exc)}
         except Exception as exc:                 # noqa: BLE001
-            outcome = {"state": "failed",
+            outcome = {"action": name, "state": "failed",
                        "error": f"{exc.__class__.__name__}: {exc}"}
         finally:
             # Recording the outcome must not depend on the connection closing
@@ -570,6 +571,47 @@ def job_state(job_id: str) -> dict[str, Any]:
                 "queries": job.get("queries") or [],
                 "steps": job.get("steps") or []}
     return job
+
+
+def running_jobs() -> list[dict[str, Any]]:
+    """Every job this process knows about, newest first.
+
+    In memory, like the jobs themselves: this is a view of what is happening
+    now, not a history. What each job produced is already stored where it
+    belongs.
+    """
+    now = time.time()
+    out = []
+    with _JOBS_LOCK:
+        for job in _JOBS.values():
+            entry = {"action": job.get("action", "?"), "state": job["state"]}
+            if job["state"] == "running":
+                entry["elapsed"] = round(now - job["started_at"])
+            else:
+                entry["error"] = job.get("error")
+                entry["finished_at"] = job.get("finished_at")
+            out.append(entry)
+    out.sort(key=lambda j: j.get("elapsed", 0), reverse=True)
+    return out
+
+
+def render_plan_page(store: Store) -> str:
+    """The plan on its own page, rather than a section three screens down."""
+    ctx = queries.context(store)
+    body = ("<h1>Plan</h1>" + ui.coverage_line(ctx["coverage"])
+            + ui.plan_section(ctx.get("plan"))
+            + ui.period_notes_section(ctx["period_notes"]))
+    return ui._page(body, "/plan")
+
+
+def render_profile_page(store: Store) -> str:
+    """Profile, goals and the zone bands — the things that are settings."""
+    ctx = queries.context(store)
+    body = ("<h1>Profil</h1>"
+            + ui.athlete_section(ctx.get("athlete"), ctx.get("memory"))
+            + ui.goals_section(ctx["goals"])
+            + ui.zone_bands_section(ctx["zone_model"]))
+    return ui._page(body, "/profil")
 
 
 def render_versions_page(store: Store, target: str, key: str) -> str:
@@ -675,7 +717,19 @@ def handler_for(dsn: str | None, window_days: int = WINDOW_DAYS):
                 return self._json(200, {"ok": True, "observed_through":
                                         observed.isoformat() if observed else None})
             parsed = urlparse(self.path)
-            if parsed.path.startswith("/versions/"):
+            if parsed.path == "/seances":
+                start, end = window_for(parse_qs(parsed.query), window_days)
+                render = lambda store: ui.render_sessions(  # noqa: E731
+                    queries.context(store),
+                    queries.list_sessions(store, start, end)["sessions"], start, end)
+            elif parsed.path == "/jobs":
+                return self._send(200, ui.render_jobs(running_jobs()).encode(),
+                                  "text/html; charset=utf-8")
+            elif parsed.path == "/plan":
+                render = render_plan_page
+            elif parsed.path == "/profil":
+                render = render_profile_page
+            elif parsed.path.startswith("/versions/"):
                 parts = parsed.path.removeprefix("/versions/").split("/", 1)
                 if len(parts) != 2 or parts[0] not in ("goals", "documents",
                                                        "session_notes"):

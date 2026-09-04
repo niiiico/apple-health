@@ -24,6 +24,16 @@
   body { margin:0; padding:1.5rem 1rem 4rem; background:var(--bg); color:var(--ink);
          font:15px/1.55 ui-sans-serif,-apple-system,"Segoe UI",sans-serif; }
   main { max-width:900px; margin:0 auto }
+  /* One bar on every page. Navigation was a scattering of "← retour" links that
+     only went where you had just been, so reaching the plan from a session took
+     three taps through pages you did not want. */
+  .topnav { max-width:900px; margin:0 auto 1.4rem; display:flex; flex-wrap:wrap;
+            gap:.15rem; border-bottom:1px solid var(--line); padding-bottom:.5rem }
+  .topnav a { padding:.5rem .7rem; text-decoration:none; color:var(--muted);
+              font-size:.9rem; font-weight:600; border-radius:6px; min-height:44px;
+              display:flex; align-items:center }
+  .topnav a:hover { color:var(--ink); background:var(--panel) }
+  .topnav a[aria-current] { color:var(--accent); background:var(--panel) }
   h1 { font-size:1.3rem; margin:0 0 .25rem }
   h2 { font-size:1rem; margin:2rem 0 .6rem; letter-spacing:.02em;
        text-transform:uppercase; color:var(--muted) }
@@ -109,6 +119,18 @@
   .chatrow .q { font-weight:600; color:var(--accent) }
   .chatrow button { width:auto; margin:0; flex:none }
   .doc { white-space:pre-wrap; line-height:1.5 }
+  .cals { display:flex; flex-wrap:wrap; gap:1.2rem }
+  .month h3 { font-size:.85rem; margin:0 0 .4rem; color:var(--muted);
+              text-transform:capitalize; font-weight:600 }
+  .grid7 { display:grid; grid-template-columns:repeat(7,1fr); gap:2px;
+           min-width:15rem }
+  .cal { aspect-ratio:1; display:flex; flex-direction:column; align-items:center;
+         justify-content:center; border-radius:4px; font-size:.7rem;
+         color:var(--muted); background:var(--bg) }
+  .cal.pad { background:none }
+  .cal.has { background:var(--accent); color:var(--on-accent); font-weight:700;
+             text-decoration:none }
+  .cal span { font-size:.6rem; letter-spacing:.04em }
   svg.route { width:100%; max-width:26rem; height:auto; display:block; margin:0 auto .6rem }
   .mapwrap { width:100%; max-width:30rem; margin:0 auto .4rem; overflow:hidden;
              border-radius:8px; container-type:inline-size }
@@ -118,6 +140,14 @@
   svg.profile { width:100%; height:5rem; display:block; margin:.4rem 0 }
   button[disabled] { opacity:.55; cursor:progress }
 </style>
+<nav class="topnav">
+  <a href="/">Aujourd'hui</a>
+  <a href="/seances">Séances</a>
+  <a href="/chat">Discussions</a>
+  <a href="/plan">Plan</a>
+  <a href="/profil">Profil</a>
+  <a href="/jobs">En cours</a>
+</nav>
 <main>__BODY__</main>
 <script>
 async function post(action, payload, el) {
@@ -225,8 +255,30 @@ document.addEventListener("click", async (e) => {
 
   // Slow buttons take the same polling path; fast ones stay a single request.
   if (b.dataset.slow) {
-    const r = await run(b.dataset.action, payload, (secs) =>
-      status.textContent = secs === null ? "…" : `en cours… ${secs}s`);
+    // A visible, growing account rather than one small line. Analysing takes a
+    // minute or two, and the old feedback was easy to miss on a phone — which
+    // read as the button doing nothing at all.
+    const panel = document.createElement("div");
+    panel.className = "reflection";
+    b.insertAdjacentElement("afterend", panel);
+    const r = await run(b.dataset.action, payload, (secs, s) => {
+      status.textContent = secs === null ? "…" : `en cours… ${secs}s`;
+      const steps = (s && s.steps) || [];
+      panel.replaceChildren(...(steps.length ? steps : [{kind: "text",
+          text: "démarrage — l'analyse tourne même si tu quittes la page"}]
+        ).map(st => {
+        const el = document.createElement("div");
+        el.className = "step " + st.kind;
+        el.textContent = st.text;
+        if (st.detail) {
+          const d = document.createElement("code");
+          d.textContent = st.detail;
+          el.appendChild(d);
+        }
+        return el;
+      }));
+    });
+    panel.remove();
     b.disabled = false;
     if (r.error) { status.textContent = r.error; status.className = "note warn"; return; }
     status.textContent = r.message || "fait"; status.className = "note saved";

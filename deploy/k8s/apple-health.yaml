@@ -262,6 +262,81 @@ spec:
             name: dev2-ca
             defaultMode: 0444
 ---
+# Analyse whatever has not been analysed yet.
+#
+# Sessions were only ever reviewed by pressing a button, so two of fourteen had
+# been — and both of those by hand while testing. An analysis waiting when the
+# page is opened is worth more than one that has to be asked for and then waited
+# on for two minutes.
+#
+# Unlike ingest this needs nothing from the Mac: the data is already in
+# Postgres, so this can run on its own schedule regardless of when the phone
+# last pushed. It simply finds nothing to do when there is nothing new.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: apple-health-review
+  namespace: apple-health
+spec:
+  # Morning and evening, Tokyo. Sessions land after training; this catches the
+  # morning's swim by evening and yesterday's ride by breakfast.
+  schedule: "30 11,23 * * *"
+  timeZone: Asia/Tokyo
+  # Two of these at once would be two models writing reviews for the same
+  # sessions, and the second would replace the first for no reason.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      # Each review is a model call of a minute or two; ten is the batch.
+      activeDeadlineSeconds: 2400
+      template:
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+          containers:
+            - name: review
+              image: registry.int.dev2.net:5000/apple-health:latest
+              imagePullPolicy: Always
+              command: ["ah-advise"]
+              args: ["review", "--limit", "10", "--since", "2026-08-01"]
+              envFrom:
+                - configMapRef:
+                    name: apple-health-config
+                - secretRef:
+                    name: apple-health-db
+              env:
+                - name: CLAUDE_CODE_OAUTH_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: apple-health-claude
+                      key: CLAUDE_CODE_OAUTH_TOKEN
+              volumeMounts:
+                - name: ca
+                  mountPath: /etc/ssl/dev2
+                  readOnly: true
+                - name: certs
+                  mountPath: /etc/apple-health/certs
+                  readOnly: true
+              resources:
+                requests: {cpu: 50m, memory: 192Mi}
+                limits: {memory: 768Mi}
+          volumes:
+            - name: certs
+              secret:
+                secretName: apple-health-certs
+                defaultMode: 0600
+            - name: ca
+              configMap:
+                name: dev2-ca
+                defaultMode: 0444
+---
 # NodePort, because HAProxy on ras15/ras16 routes to a host:port backend. It
 # terminates TLS from the internal CA and matches on SNI, so there is no
 # Ingress here and no second path to the same pod.

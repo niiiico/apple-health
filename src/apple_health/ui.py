@@ -43,6 +43,14 @@ def _num(value: object, places: int = 2, suffix: str = "") -> str:
     return "" if value is None else f"{float(value):.{places}f}{suffix}"
 
 
+def _page(body: str, here: str = "") -> str:
+    """Wrap a body in the shell, marking which nav entry is current."""
+    html = TEMPLATE.read_text().replace("__BODY__", body)
+    if here:
+        html = html.replace(f'<a href="{here}">', f'<a href="{here}" aria-current="page">')
+    return html
+
+
 def coverage_line(coverage: dict) -> str:
     """The header every page carries: what is known, and to when.
 
@@ -373,10 +381,11 @@ def window_nav(start: date, end: date, span: dict) -> str:
           f"</p></div>")
 
 
-def sessions_section(sessions: list[dict]) -> str:
+def sessions_section(sessions: list[dict], heading: str = "Séances",
+                     more: str = "") -> str:
     """Sessions in the window, each with a place to say what the numbers cannot."""
     if not sessions:
-        return ("<h2>Séances</h2><p class=\"note\">Aucune dans cette fenêtre — "
+        return (f"<h2>{heading}</h2><p class=\"note\">Aucune dans cette fenêtre — "
                 "ce qui dit quelque chose de la fenêtre, pas du dossier.</p>")
     cards = []
     for s in sessions:
@@ -413,7 +422,7 @@ def sessions_section(sessions: list[dict]) -> str:
             f'{_esc(s.get("note"))}</textarea>'
             f'<button data-action="set_session_note">Enregistrer</button>'
             f'<span data-status></span></details></div>')
-    return "<h2>Séances</h2>" + "".join(cards)
+    return f"<h2>{heading}</h2>" + "".join(cards) + (f"<p>{more}</p>" if more else "")
 
 
 def note_history_section(history: list[dict] | None) -> str:
@@ -449,6 +458,86 @@ def render_versions(target: str, key: str, versions: list[dict],
     return TEMPLATE.read_text().replace("__BODY__", (
         f"<h1>Versions — {_esc(label or key)}</h1>"
         f'<p><a class="btn" href="/">&larr; retour</a></p>{rows}'))
+
+
+def calendar_section(sessions: list[dict], start: date, end: date) -> str:
+    """Which days had training, as a month grid.
+
+    A list answers "what did I do on the 2nd"; this answers "how does the block
+    look", which is the question a training week is actually judged on. Empty
+    days are the information — three blanks in a row is the thing worth seeing.
+    """
+    by_day: dict[str, list[dict]] = {}
+    for s in sessions:
+        by_day.setdefault(s["date"], []).append(s)
+
+    months: list[str] = []
+    cursor = date(start.year, start.month, 1)
+    while cursor <= end:
+        if cursor.month == 12:
+            nxt = date(cursor.year + 1, 1, 1)
+        else:
+            nxt = date(cursor.year, cursor.month + 1, 1)
+        cells = ""
+        # Monday-first, matching how the plan is written.
+        for _ in range(cursor.weekday()):
+            cells += '<span class="cal pad"></span>'
+        day = cursor
+        while day < nxt:
+            key = day.isoformat()
+            todays = by_day.get(key, [])
+            if todays:
+                initials = "".join(
+                    _activity(s["activity"])[0].upper() for s in todays[:3])
+                cells += (f'<a class="cal has" href="/seances?from={key}&to={key}" '
+                          f'title="{_esc(", ".join(_activity(s["activity"]) for s in todays))}">'
+                          f'<b>{day.day}</b><span>{_esc(initials)}</span></a>')
+            else:
+                cells += f'<span class="cal"><b>{day.day}</b></span>'
+            day = day + timedelta(days=1)
+        months.append(
+            f'<div class="month"><h3>{cursor.strftime("%B %Y")}</h3>'
+            f'<div class="grid7">{cells}</div></div>')
+        cursor = nxt
+    return f'<div class="card cals">{"".join(months)}</div>'
+
+
+def render_sessions(context: dict, sessions: list[dict], start: date,
+                    end: date) -> str:
+    """Every session in the window, with a calendar above it."""
+    body = (
+        "<h1>Séances</h1>"
+        + coverage_line(context["coverage"])
+        + window_summary(sessions, start, end, context["record"])
+        + calendar_section(sessions, start, end)
+        + window_nav(start, end, context["record"])
+        + sessions_section(sessions))
+    return _page(body, "/seances")
+
+
+def render_jobs(jobs: list[dict]) -> str:
+    """What the advisor is doing right now, and what it just finished.
+
+    Analysing a session takes a minute or two behind the request, and until now
+    the only sign of it was a small status line on the page that started it —
+    leave that page and the work became invisible.
+    """
+    rows = ""
+    for j in jobs:
+        state = {"running": "en cours", "done": "terminé",
+                 "failed": "échec"}.get(j["state"], j["state"])
+        detail = (f'{j["elapsed"]}s' if j.get("elapsed") is not None
+                  else _esc(str(j.get("error") or "")[:120]))
+        rows += (f'<div class="chatrow"><span class="q">{_esc(j["action"])}</span>'
+                 f'<span class="note">{state} · {detail}</span></div>')
+    if not rows:
+        rows = ('<p class="note">Rien en cours. Les analyses et le plan tournent '
+                "ici quand tu les lances.</p>")
+    body = ("<h1>En cours</h1>"
+            '<p class="cov">Les travaux longs tournent derrière la requête ; '
+            "cette page les montre où que tu sois.</p>"
+            f'<div class="card">{rows}</div>')
+    return _page(body, "/jobs")
 
 
 def render_error(exc: Exception) -> str:
@@ -524,13 +613,13 @@ def render(context: dict, sessions: list[dict], start: date, end: date) -> str:
         + coverage_line(context["coverage"])
         + window_summary(sessions, start, end, context["record"])
         + chat_section(context.get("chat_history"))
-        + sessions_section(sessions)
-        + window_nav(start, end, context["record"])
+        # The last session, not forty-five days of them. The list is the whole
+        # point of /seances; repeating it here pushed everything else off the
+        # page and made the landing view a worse version of that one.
+        + sessions_section(sessions[:1], heading="Dernière séance",
+                           more='<a class="btn" href="/seances">toutes les séances →</a>')
         + plan_section(context.get("plan"))
         + goals_section(context["goals"])
-        + athlete_section(context.get("athlete"), context.get("memory"))
-        + period_notes_section(context["period_notes"])
-        + zone_bands_section(context["zone_model"])
         + "<footer>Ce que la montre n'enregistre pas se note ici.</footer>"
     )
     return TEMPLATE.read_text().replace("__BODY__", body)
