@@ -11,8 +11,9 @@ app to send them, which it now does.
 
 Units are normalised on the way in, because Apple's are not consistent: weather
 temperature is written in °F on this device but the key does not promise it,
-elevation is in centimetres despite reading like metres, and humidity is a
-percentage times one hundred.
+elevation is in centimetres despite reading like metres, humidity is a
+percentage times one hundred, and the swimming location is an enum's integer
+whose meaning lives only in the SDK.
 
 Usage::
 
@@ -74,6 +75,37 @@ def humidity_pct(raw: str | None) -> float | None:
     return value / 100 if value > 100 else value
 
 
+# `HKWorkoutSwimmingLocationType`, which the export writes as a bare integer.
+# Zero (`unknown`) is deliberately absent: it maps to None below rather than to
+# a location, because "we don't know" recorded as a place is worse than a blank.
+_SWIM_LOCATIONS = {"1": "pool", "2": "openWater",
+                   "pool": "pool", "openwater": "openWater"}
+
+
+def swim_location(raw: str | None) -> str | None:
+    """"pool" or "openWater", from whichever form wrote it.
+
+    The export writes the enum's integer and the delta path writes the name, so
+    the column held both vocabularies and every reader had to know both — which
+    is how it ended up rendered as a bare "1" in the session view. Normalising
+    here means the name is the only thing stored, and the integer never leaves
+    this function.
+
+    The mapping is pinned by the record itself: all 82 workouts written as "1"
+    carry a 25 m `HKLapLength`, and none of the 8 written as "2" carry one.
+
+    Matched case-insensitively after dropping the type prefix, so the spelling
+    Apple uses elsewhere (`HKWorkoutSwimmingLocationTypePool`) maps rather than
+    falling through to None. The first version stripped that prefix and then
+    compared the result — "Pool" — against lowercase keys, so the one input the
+    strip existed for was the one it discarded.
+    """
+    if raw is None:
+        return None
+    key = raw.strip().replace("HKWorkoutSwimmingLocationType", "").casefold()
+    return _SWIM_LOCATIONS.get(key)
+
+
 def length_m(raw: str | None) -> float | None:
     """Metres, from whatever length unit was written."""
     q = _quantity(raw)
@@ -125,7 +157,7 @@ def read_workouts(export: Path) -> list[dict[str, Any]]:
             "elevation_descended_m": length_m(meta.get("HKElevationDescended")),
             "avg_mets": (_quantity(meta.get("HKAverageMETs")) or (None,))[0],
             "pool_length_m": length_m(meta.get("HKLapLength")),
-            "swim_location": meta.get("HKSwimmingLocationType"),
+            "swim_location": swim_location(meta.get("HKSwimmingLocationType")),
             "max_speed_kmh": speed_kmh(meta.get("HKMaximumSpeed")),
         })
         el.clear()

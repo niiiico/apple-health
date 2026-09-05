@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -214,7 +215,60 @@ _META = ("weather_temp_c", "weather_humidity_pct", "elevation_ascended_m",
          "max_speed_kmh")
 
 
-def _merge_conditions(cur, section: dict) -> int:
+_TRUSTED_BUILD = 46
+"""Builds from which the app's conditions can be taken at face value.
+
+Below this the phone shipped two known-wrong values, so the deltas already in
+the archive carry them and a re-base would replay them. Repairing the rows was
+not enough on its own: the delta files are the source for the delta era, and a
+fix that lives only in the database is a fix that lasts until the next rebuild.
+"""
+
+
+def _build(app_version: str | None) -> int | None:
+    """The build number out of "1.0 (45)", or None when it isn't stated.
+
+    Builds up to 44 reported a bare "1.0" — the build number was itself one of
+    the things that was missing — so None means "old", not "unknown".
+    """
+    if not app_version:
+        return None
+    match = re.search(r"\((\d+)\)", app_version)
+    return int(match.group(1)) if match else None
+
+
+def _repair_conditions(w: dict, build: int | None) -> dict:
+    """Undo what a known-bad build wrote, before any of it is stored.
+
+    Two values, both plausible enough to survive a reading:
+
+    - **Humidity** came through as 7900 for 79 %. Corrected on the *value* and
+      for every build, because no humidity is above 100: the invariant is a
+      property of the quantity, not of the version that got it wrong, so this
+      stays right for whichever build breaks it next.
+    - **Swimming location** was wrong, and not merely inverted. The old
+      expression was `intValue == 1 ? "openWater" : "pool"`, so `"pool"` came
+      from raw 2 (openWater) *and* from raw 0 (unknown) — one label, two
+      meanings. Flipping it would therefore state "openWater" about a swim
+      HealthKit could not place, which is the invented-certainty this whole
+      correction exists to undo. So the label is discarded and the location is
+      re-derived from the lap length, which is the same test migration 16
+      applies: the two paths have to agree, or a re-base would silently
+      relabel swims the database already holds. Gated on the *build*, because
+      unlike humidity nothing in the value itself says it is wrong.
+    """
+    fixed = dict(w)
+    humidity = fixed.get("weather_humidity_pct")
+    if isinstance(humidity, (int, float)) and humidity > 100:
+        fixed["weather_humidity_pct"] = humidity / 100
+    if fixed.get("swim_location") is not None and (
+            build is None or build < _TRUSTED_BUILD):
+        fixed["swim_location"] = (
+            "pool" if fixed.get("pool_length_m") is not None else "openWater")
+    return fixed
+
+
+def _merge_conditions(cur, section: dict, app_version: str | None) -> int:
     """Fill weather, elevation and the rest onto the workout row.
 
     Applied whether or not the workout was just inserted: one already present
@@ -225,10 +279,12 @@ def _merge_conditions(cur, section: dict) -> int:
     backfill must not overwrite a value with the null it happens to carry.
     """
     filled = 0
+    build = _build(app_version)
     sets = ", ".join(f"{f} = COALESCE({f}, %s)" for f in _META)
     for w in section.get("added", []):
         if not w.get("uuid") or all(w.get(f) is None for f in _META):
             continue
+        w = _repair_conditions(w, build)
         cur.execute(f"UPDATE workouts SET {sets} WHERE uuid = %s",
                     tuple(w.get(f) for f in _META) + (w["uuid"],))
         filled += cur.rowcount
@@ -364,7 +420,7 @@ def apply_delta(store: Store, path: Path) -> dict[str, int]:
         n_routes = _merge_routes(cur, workouts, path.parent)
         n_hr = _merge_hr_series(cur, workouts, path.parent)
         n_lengths = _merge_swim_lengths(cur, path.parent, workouts)
-        n_cond = _merge_conditions(cur, workouts)
+        n_cond = _merge_conditions(cur, workouts, delta.get("app_version"))
         n_seg = _merge_segments(cur, workouts)
         n_ev = _merge_events(cur, workouts)
         observed = _observed_through(path.parent, path.name)

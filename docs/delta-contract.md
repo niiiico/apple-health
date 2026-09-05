@@ -119,7 +119,12 @@ silently.
         "elevation_descended_m": null,
         "avg_mets": 8.2,                      // kcal/kg·h
         "pool_length_m": 25.0,                // null outside a pool
-        "swim_location": "pool",              // "pool" | "openWater" | null
+        // "pool" | "openWater" | null. Never the enum's integer, and never
+        // "unknown": HealthKit's 0 is sent as null, because a location we do
+        // not have is not a place. **Builds < 46 inverted this** and multiplied
+        // humidity by 100; `pgsync._repair_conditions` corrects both on the way
+        // in, keyed on `app_version`, so replaying an archived delta is safe.
+        "swim_location": "pool",
         "max_speed_kmh": null,
 
         // Multi-sport legs (added 2026-08-29). A triathlon arrives as one

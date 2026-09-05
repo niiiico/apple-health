@@ -784,8 +784,14 @@ def render_session(detail: dict) -> str:
         f"{s['avg_mets']:.1f} MET" if s.get("avg_mets") is not None else "",
         f"bassin {s['pool_length_m']:.0f} m"
         if s.get("pool_length_m") is not None else "",
-        str(s.get("swim_location") or "").replace(
-            "HKWorkoutSwimmingLocationType", ""),
+        # Named, not passed through. This printed a bare "1" for every archived
+        # swim — the export writes the enum's integer — and stripping a prefix
+        # the export never wrote was the only handling it had. "bassin" is
+        # dropped when the lap length two entries up has already said it, which
+        # otherwise reads "bassin 25 m · bassin"; open water has nothing else
+        # announcing it, so it always earns its place.
+        {"pool": "" if s.get("pool_length_m") is not None else "bassin",
+         "openWater": "eau libre"}.get(s.get("swim_location"), ""),
     ) if x)
 
     stats = " · ".join(x for x in (

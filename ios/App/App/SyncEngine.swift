@@ -560,8 +560,22 @@ final class SyncEngine {
                                        .unitDivided(by: HKUnit.gramUnit(with: .kilo)
                                            .unitMultiplied(by: .hour()))),
             pool_length_m: metaQuantity(w, HKMetadataKeyLapLength, .meter()),
+            // `HKWorkoutSwimmingLocationType`: unknown 0, pool 1, openWater 2.
+            // Read through the enum rather than the integer, because the first
+            // version tested `intValue == 1` for *openWater* — exactly
+            // backwards — so every pool swim was filed as open water and the
+            // one open-water swim as pool. Both are plausible values in a
+            // column nothing validates, which is why it stood for a week.
+            // `unknown` yields nil instead of falling through to "pool": a
+            // default that always answers is what let the inversion hide.
             swim_location: (w.metadata?[HKMetadataKeySwimmingLocationType] as? NSNumber)
-                .map { $0.intValue == 1 ? "openWater" : "pool" },
+                .flatMap { n -> String? in
+                    switch HKWorkoutSwimmingLocationType(rawValue: n.intValue) {
+                    case .pool:      return "pool"
+                    case .openWater: return "openWater"
+                    default:         return nil
+                    }
+                },
             max_speed_kmh: metaQuantity(
                 w, HKMetadataKeyMaximumSpeed,
                 HKUnit.meterUnit(with: .kilo).unitDivided(by: .hour())),

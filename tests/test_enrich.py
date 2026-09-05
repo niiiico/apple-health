@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from apple_health.commands.enrich import (
-    humidity_pct, length_m, speed_kmh, temperature_c,
+    humidity_pct, length_m, speed_kmh, swim_location, temperature_c,
 )
 
 
@@ -84,3 +84,40 @@ def test_metres_per_second_become_kmh():
 
 def test_an_unknown_speed_unit_is_refused():
     assert speed_kmh("5 knots") is None
+
+
+# --- swimming location -------------------------------------------------------
+
+def test_the_exports_integer_becomes_a_name():
+    """`HKWorkoutSwimmingLocationType`: 1 is pool, 2 is open water.
+
+    Pinned by the record rather than by the SDK docs: every one of the 82
+    archived workouts written as "1" carries a 25 m lap length, and none of the
+    8 written as "2" carries one.
+    """
+    assert swim_location("1") == "pool"
+    assert swim_location("2") == "openWater"
+
+
+def test_a_name_passes_through():
+    """The delta path already writes the name; both feed the same column."""
+    assert swim_location("pool") == "pool"
+    assert swim_location("openWater") == "openWater"
+
+
+def test_unknown_is_not_a_location():
+    """Zero is HealthKit's `unknown`. Stored as a place it would read as fact."""
+    assert swim_location("0") is None
+    assert swim_location("7") is None
+    assert swim_location(None) is None
+
+
+def test_the_prefixed_spelling_maps_rather_than_vanishing():
+    """The strip existed for this form and then discarded it.
+
+    `"HKWorkoutSwimmingLocationTypePool"` strips to `"Pool"`, which matched no
+    lowercase key — so the one input the prefix handling was written for was
+    the one it turned into None.
+    """
+    assert swim_location("HKWorkoutSwimmingLocationTypePool") == "pool"
+    assert swim_location("HKWorkoutSwimmingLocationTypeOpenWater") == "openWater"

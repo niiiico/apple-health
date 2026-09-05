@@ -485,6 +485,51 @@ _MIGRATIONS: tuple[str, ...] = (
     CREATE INDEX advisor_memory_live ON advisor_memory (learned_at DESC)
         WHERE archived_at IS NULL;
     """,
+    # 16 — repair two conditions the phone recorded wrongly.
+    #
+    # `swim_location` held two vocabularies and one of them was inverted. The
+    # export path stored `HKWorkoutSwimmingLocationType` as its bare integer;
+    # the app stored the name, and mapped it backwards — it tested `== 1` for
+    # openWater when 1 is pool. So a pool swim read "openWater" and the one
+    # open-water swim read "pool", each entirely plausible on its own.
+    #
+    # The record settles the mapping without reference to the SDK: all 82 rows
+    # written as '1' carry a 25 m lap length and none of the 8 written as '2'
+    # do. That test — not the label — is what this rewrites from, so running it
+    # twice lands on the same answer. A migration that flipped the *label*
+    # would be correct once and destructive on the second pass, which is a live
+    # risk here: rolling a schema version back is exactly the move somebody
+    # reaches for when an old pod refuses a newer database.
+    #
+    # `pgsync._repair_conditions` applies this same test to a replayed delta,
+    # deliberately: two rules for one column would disagree on a re-base and
+    # relabel swims the database already holds.
+    #
+    # Know what it costs before re-running it. Deriving from the evidence means
+    # every non-null label is rewritten, not only the wrong ones — so a genuine
+    # pool swim recorded with no `HKLapLength` (a third-party source, a watch
+    # that omitted it) becomes 'openWater'. There is no marker on a row saying
+    # which build wrote it, so the choice is this or a migration that cannot
+    # safely run twice; on this record the set is empty, since all 82 pool rows
+    # carry a lap length.
+    #
+    # Humidity came through as 7900 for 79 %: the app multiplied by 100 on the
+    # belief that `HKUnit.percent()` yields a fraction. Build 45 fixed that and
+    # was never installed, so four workouts carry it. Divided rather than
+    # deleted — the value is recoverable exactly — and idempotent for the same
+    # reason, since nothing is above 100 once it has run.
+    """
+    UPDATE workouts SET swim_location = CASE
+        WHEN swim_location = '1'        THEN 'pool'
+        WHEN swim_location = '2'        THEN 'openWater'
+        WHEN pool_length_m IS NOT NULL  THEN 'pool'
+        ELSE 'openWater'
+    END
+    WHERE swim_location IS NOT NULL;
+
+    UPDATE workouts SET weather_humidity_pct = weather_humidity_pct / 100
+    WHERE weather_humidity_pct > 100;
+    """,
 )
 
 
