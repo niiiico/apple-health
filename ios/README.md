@@ -76,6 +76,33 @@ registers the App ID with the HealthKit capability and creates the iCloud
 container on first build (needs a paid developer account for iCloud; a free
 Apple ID also limits sideloads to 7 days).
 
+## Shipping a build to the phone
+
+Bumping `CURRENT_PROJECT_VERSION` changes nothing on the phone by itself. The
+OTA server serves the newest `.ipa` under `distrib/`, which is gitignored and
+starts out absent — so a fix can be committed, correct and entirely unshipped.
+That is not hypothetical: build 45 fixed the humidity scaling on 2026-08-29 and
+was still not installed a week later, because nothing between the commit and
+the phone ever ran.
+
+```bash
+zsh scripts/build_ipa.sh      # archive + ad-hoc export into distrib/
+uv run python tools/ota/ota_server.py
+```
+
+Then open `https://<mac-ip>:8443/` in Safari on the iPhone and install.
+
+**Confirm the build actually arrived**, rather than assuming the install took:
+every delta carries `app_version` as `"1.0 (46)"`, so
+
+```bash
+python -c "import json,sys;print(json.load(open(sys.argv[1]))['app_version'])" \
+    "$(ls -t /Volumes/nicolas-data/HealthData/healthsync-inbox/delta-*.json | head -1)"
+```
+
+A bare `"1.0"` means a build older than 45 — the build number was itself one of
+the things 45 added, so its absence is the signal.
+
 ## Bootstrap cutoff — why the first sync is small
 
 `health.db` is built by `ah-build` from a full export; deltas are merged on top
