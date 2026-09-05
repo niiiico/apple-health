@@ -306,9 +306,16 @@ def answer_question(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
                         (workout_id,))
             requeued = cur.rowcount > 0
     store.commit()
+    # Rewritten now, not at 11:30 or 23:30. Waiting for the cron meant the one
+    # moment the answer is interesting — just after typing it — is the moment
+    # nothing happens, and up to twelve hours passed before the reading caught
+    # up with what he had said. `_then` is picked up by the POST handler, which
+    # is the only place that holds the dsn a background job needs.
     return {"message": "réponse enregistrée"
-                       + (" — le compte-rendu sera réécrit" if requeued else ""),
-            "workout_id": workout_id, "requeued": requeued}
+                       + (" — analyse relancée" if requeued else ""),
+            "workout_id": workout_id, "requeued": requeued,
+            "_then": ({"action": "review_session",
+                       "payload": {"workout_id": workout_id}} if requeued else None)}
 
 
 def set_session_note(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
@@ -762,10 +769,23 @@ def handler_for(dsn: str | None, window_days: int = WINDOW_DAYS):
                                         observed.isoformat() if observed else None})
             parsed = urlparse(self.path)
             if parsed.path == "/seances":
-                start, end = window_for(parse_qs(parsed.query), window_days)
+                params = parse_qs(parsed.query)
+                start, end = window_for(params, window_days)
+                # Filtering happens in the renderer, not the query, so the
+                # filter bar can show what each choice would leave — counted
+                # over the whole window rather than over itself.
+                activity = (params.get("activity") or [None])[0]
+                races_only = (params.get("races") or ["0"])[0] == "1"
+                # Races are rare and old — the newest archived one is months
+                # back — so a forty-five day window shows none of them and the
+                # filter looks broken. Asking for races asks for all of them,
+                # unless a window was named explicitly.
+                if races_only and not (params.get("from") or params.get("to")):
+                    start = date(2013, 1, 1)
                 render = lambda store: ui.render_sessions(  # noqa: E731
                     queries.context(store),
-                    queries.list_sessions(store, start, end)["sessions"], start, end)
+                    queries.list_sessions(store, start, end)["sessions"], start, end,
+                    activity=activity, races_only=races_only)
             elif parsed.path == "/jobs":
                 return self._send(200, ui.render_jobs(running_jobs()).encode(),
                                   "text/html; charset=utf-8")
@@ -848,6 +868,17 @@ def handler_for(dsn: str | None, window_days: int = WINDOW_DAYS):
                 return self._json(500, {"error": f"{exc.__class__.__name__}: {exc}"})
             finally:
                 store.close()
+            # A fast action may ask for a slow one to follow it. Started after
+            # the store is closed and the write is committed, so the job reads
+            # the answer rather than racing it.
+            then = result.pop("_then", None)
+            if then:
+                try:
+                    result["job"] = start_job(dsn, then["action"], then["payload"])
+                except Exception as exc:          # noqa: BLE001
+                    # The answer is saved; only the re-reading failed. Saying so
+                    # beats reporting the whole call as an error.
+                    result["message"] += f" (relance impossible : {exc})"
             self._json(200, result)
 
         def log_message(self, fmt, *args):

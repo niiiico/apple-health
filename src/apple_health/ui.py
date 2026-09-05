@@ -8,6 +8,7 @@ function here is a pure function of already-fetched rows.
 from __future__ import annotations
 
 import html
+import json
 import math
 from datetime import date, timedelta
 from pathlib import Path
@@ -402,6 +403,8 @@ def sessions_section(sessions: list[dict], heading: str = "Séances",
         # changed which pill decorated every row: it described the ingest era,
         # not the session. A flag that fires on nearly everything is skipped.
         flags = ""
+        if s.get("race"):
+            flags += '<span class="flag race">course</span>'
         if s.get("has_laps"):
             flags += '<span class="flag">longueurs</span>'
         cards.append(
@@ -552,16 +555,78 @@ def calendar_section(sessions: list[dict], start: date, end: date) -> str:
     return f'<div class="card cals">{"".join(months)}</div>'
 
 
+def filter_bar(sessions: list[dict], start: date, end: date,
+               activity: str | None, races_only: bool) -> str:
+    """Sport and race filters, plus what the window actually is.
+
+    One row above the list, which is where a filter belongs. The counts are of
+    the *unfiltered* window, so choosing one does not hide how much it removed
+    — a filter that renumbers itself gives no way to tell an empty result from
+    a wrong query.
+
+    Links, not scripts: each is a URL, so a filtered view can be sent to
+    yourself and comes back the same.
+    """
+    counts: dict[str, int] = {}
+    for s in sessions:
+        counts[s["activity"]] = counts.get(s["activity"], 0) + 1
+    races = sum(1 for s in sessions if s.get("race"))
+
+    def link(label: str, params: str, on: bool) -> str:
+        cls = "chip on" if on else "chip"
+        return f'<a class="{cls}" href="/seances?{params}">{_esc(label)}</a>'
+
+    window = f"from={start.isoformat()}&to={end.isoformat()}"
+    chips = [link(f"tout ({len(sessions)})", window, not activity and not races_only)]
+    for act, n in sorted(counts.items(), key=lambda kv: -kv[1]):
+        chips.append(link(f"{_activity(act)} ({n})", f"{window}&activity={act}",
+                          activity == act))
+    # Offered even when this window holds none: asking for races widens the
+    # window to the whole record, so an empty count here is not an empty
+    # answer. It is the one filter that is not a subset of what is on screen.
+    chips.append(link(f"courses ({races})" if races else "courses",
+                      "races=1", races_only))
+
+    note = ""
+    if races_only:
+        note = ('<p class="note">« Courses » = les séances pour lesquelles '
+                "<code>data/races/</code> contient une archive — trois à ce "
+                "jour. Rien dans HealthKit ne dit qu'une séance était une "
+                "course, donc c'est un plancher, pas un inventaire, et ce "
+                "filtre couvre tout le dossier plutôt que la fenêtre.</p>")
+    return f'<div class="filters">{"".join(chips)}</div>{note}'
+
+
 def render_sessions(context: dict, sessions: list[dict], start: date,
-                    end: date) -> str:
-    """Every session in the window, with a calendar above it."""
+                    end: date, activity: str | None = None,
+                    races_only: bool = False) -> str:
+    """Every session in the window, newest first, with a calendar above it.
+
+    Newest first because the question asked of this page is almost always about
+    the last few days; oldest-first meant scrolling to the bottom of a
+    forty-five day window to reach yesterday. The calendar above keeps reading
+    left-to-right through the month, which is how a month is read.
+    """
+    shown = sessions
+    if activity:
+        shown = [s for s in shown if s["activity"] == activity]
+    if races_only:
+        shown = [s for s in shown if s.get("race")]
+    newest_first = sorted(shown, key=lambda s: s["date"], reverse=True)
+
     body = (
         "<h1>Séances</h1>"
         + coverage_line(context["coverage"])
-        + window_summary(sessions, start, end, context["record"])
-        + calendar_section(sessions, start, end)
+        + window_summary(newest_first, start, end, context["record"])
+        # Said in words, above the list. The window was implied by two arrows
+        # and a pair of dates in the nav, so the page looked like the whole
+        # record with an odd beginning.
+        + f'<p class="cov">Fenêtre affichée : <b>{start.isoformat()}</b> → '
+        f"<b>{end.isoformat()}</b> ({(end - start).days + 1} jours).</p>"
+        + calendar_section(newest_first, start, end)
         + window_nav(start, end, context["record"])
-        + sessions_section(sessions))
+        + filter_bar(sessions, start, end, activity, races_only)
+        + sessions_section(newest_first))
     return _page(body, "/seances")
 
 
@@ -726,9 +791,21 @@ def route_section(route: dict | None) -> str:
         f"{imgs}"
         f'<svg viewBox="0 0 {grid["width"]} {grid["height"]}" class="track" '
         f'preserveAspectRatio="none">'
-        f'<polyline points="{track}" fill="none" stroke="#e8590c" '
-        f'stroke-width="4" stroke-linejoin="round" stroke-linecap="round" '
-        f'opacity="0.9"/></svg></div></div>'
+        # Drawn twice. A single stroke — it was #e8590c — disappears into
+        # OpenStreetMap's own orange trunk roads and its beige built-up fill;
+        # on a city ride the track was findable only where it crossed a park.
+        # The white casing underneath is the standard cartographic fix: it
+        # separates the line from whatever it runs over, so the colour on top
+        # no longer has to win against the basemap on its own.
+        f'<polyline points="{track}" fill="none" stroke="#ffffff" '
+        f'stroke-width="7" stroke-linejoin="round" stroke-linecap="round" '
+        f'opacity="0.85"/>'
+        f'<polyline points="{track}" fill="none" stroke="#7b2ff7" '
+        f'stroke-width="3.5" stroke-linejoin="round" stroke-linecap="round"/>'
+        # Where the scrubber is. Hidden until the profile is touched.
+        f'<circle class="scrub-dot" r="7" fill="#7b2ff7" stroke="#ffffff" '
+        f'stroke-width="3" opacity="0"/>'
+        f"</svg></div></div>"
         f'<p class="note">Fond de carte © OpenStreetMap. Les tuiles sont '
         f"récupérées par le serveur, jamais par ce navigateur, et gardées en "
         f"cache — une tuile n'est demandée qu'une seule fois.</p>")
@@ -747,23 +824,183 @@ def route_section(route: dict | None) -> str:
     lo, hi = route.get("ele_min"), route.get("ele_max")
     if lo is not None and hi is not None and hi - lo > 1:
         span = hi - lo
-        n = len(eles)
-        pairs = [(i / max(n - 1, 1) * 100.0, 30.0 - ((e - lo) / span * 28.0))
-                 for i, e in enumerate(eles) if e is not None]
-        if len(pairs) > 1:
+        # Cumulative distance along the sampled track, so the x axis is in
+        # kilometres rather than "point number". Equirectangular is plenty at
+        # this scale and the axis only carries three or four labels.
+        cum, total = [0.0], 0.0
+        for (la1, lo1), (la2, lo2) in zip(pts, pts[1:]):
+            dy = (la2 - la1) * 111_320.0
+            dx = (lo2 - lo1) * 111_320.0 * math.cos(math.radians((la1 + la2) / 2))
+            total += math.hypot(dx, dy)
+            cum.append(total)
+        km = total / 1000.0
+
+        idx = [i for i, e in enumerate(eles) if e is not None]
+        if len(idx) > 1:
+            # Plotted against distance, not index: a track sampled evenly in
+            # time is not sampled evenly in space, and drawing it as though it
+            # were bends every climb toward wherever he was slowest.
+            pairs = [((cum[i] / total if total else i / max(len(eles) - 1, 1)) * 100.0,
+                      30.0 - ((eles[i] - lo) / span * 28.0)) for i in idx]
             line = " ".join(f"{x:.2f},{y:.2f}" for x, y in pairs)
-            area = f"0,30 {line} 100,30"
+            area = f"{pairs[0][0]:.2f},30 {line} {pairs[-1][0]:.2f},30"
+            mid = (lo + hi) / 2
+            # Four ticks including zero; the last is the total, which is the
+            # one number worth reading off this axis.
+            xlabels = "".join(
+                f"<span>{(km * f):.1f}</span>" for f in (0, 1 / 3, 2 / 3, 1))
+            scrub = json.dumps({
+                # One index space for both: `points` and `elevation` come out
+                # of the same bucketed query, so profile position i *is* map
+                # position i. Anything else here would drift them apart.
+                "map": [[round(x, 1), round(y, 1)] for x, y in proj],
+                "idx": idx,
+                "x": [round(x, 2) for x, _ in pairs],
+                "ele": [round(eles[i], 1) for i in idx],
+                "km": [round(cum[i] / 1000.0, 2) for i in idx],
+            }, separators=(",", ":"))
             profile = (
+                f'<div class="profile-wrap" data-route '
+                f"data-scrub='{_esc(scrub)}'>"
+                f'<div class="yaxis"><span>{hi:.0f}</span><span>{mid:.0f}</span>'
+                f'<span>{lo:.0f}</span></div>'
+                f'<div class="plot">'
                 f'<svg viewBox="0 0 100 30" class="profile" '
                 f'preserveAspectRatio="none" role="img" aria-label="profil">'
-                f'<polygon points="{area}" fill="currentColor" opacity="0.18"/>'
+                # Hairline, recessive, and behind the data.
+                f'<line x1="0" y1="2" x2="100" y2="2" class="grid"/>'
+                f'<line x1="0" y1="16" x2="100" y2="16" class="grid"/>'
+                f'<line x1="0" y1="30" x2="100" y2="30" class="grid"/>'
+                f'<polygon points="{area}" fill="currentColor" opacity="0.15"/>'
                 f'<polyline points="{line}" fill="none" stroke="currentColor" '
-                f'stroke-width="0.6"/></svg>'
-                f'<p class="note">{lo:.0f}–{hi:.0f} m — profil échantillonné '
-                f"sur {len(pairs)} points.</p>")
+                f'stroke-width="0.6" vector-effect="non-scaling-stroke"/>'
+                f'<line class="scrub-line" x1="0" y1="0" x2="0" y2="30" '
+                f'opacity="0" vector-effect="non-scaling-stroke"/>'
+                f"</svg>"
+                f'<div class="scrub-hit" role="slider" tabindex="0" '
+                f'aria-label="parcourir le profil" aria-valuemin="0" '
+                f'aria-valuemax="{km:.1f}" aria-valuenow="0"></div>'
+                f'</div>'
+                f'<div class="xaxis">{xlabels}</div>'
+                f'<div class="unit">m</div><div class="unit km">km</div>'
+                f"</div>"
+                f'<p class="note"><span data-readout>{lo:.0f}–{hi:.0f} m sur '
+                f"{km:.1f} km</span> — {len(idx)} points échantillonnés. "
+                f"Glisse sur le profil pour situer un point sur la carte. "
+                # The axis will not match the session's distance and should not
+                # be read as disagreeing with it: measuring along a track cut
+                # to 400 points shortens every bend, a few percent over a ride.
+                f"Le kilométrage est mesuré le long du tracé échantillonné, "
+                f"donc légèrement court par rapport à la distance de la "
+                f"séance.</p>")
 
     return (f"<h2>Parcours</h2><div class=\"card\">{mapped}{profile}"
             f"</div>")
+
+
+def zone_donut(hr: dict) -> str:
+    """Time in each heart-rate zone, as a ring.
+
+    Part-to-whole of five ordered slices, which is the one job a donut does
+    better than a bar: the question here is "how was this session divided",
+    not "which zone was biggest". The table below carries the exact minutes,
+    so the ring never has to be read precisely.
+
+    Colour is one hue getting darker, not five hues. Zones are **ordered** —
+    Z1 to Z5 is a scale, not five unrelated things — and the training-app
+    convention of blue/green/yellow/orange/red is a rainbow ramp: it implies
+    Z3 differs from Z2 the way green differs from yellow, which is a category
+    difference, and it puts the two most alarming colours on the two zones
+    least often reached. A single ramp says "more" without saying "other".
+
+    Slices are separated by a surface-coloured gap so adjacent zones stay
+    distinct without an outline, and each slice is labelled directly when it
+    is big enough to hold text — colour alone never carries the identity.
+    """
+    order = [l for l in hr.get("zone_percent", {}) if hr.get("zone_seconds", {}).get(l)]
+    total = sum(hr["zone_seconds"][l] for l in order)
+    if not order or total <= 0:
+        return ""
+
+    # Circumference arithmetic on r=1 keeps the numbers readable: a slice of
+    # share s is s * 2pi of the ring.
+    R, STROKE = 42.0, 22.0
+    circ = 2 * math.pi * R
+    GAP = 2.0                      # px of surface between slices, per marks spec
+    out, offset, legend = [], 0.0, []
+    for i, label in enumerate(order):
+        share = hr["zone_seconds"][label] / total
+        length = max(share * circ - GAP, 0.5)
+        secs = int(hr["zone_seconds"][label])
+        out.append(
+            f'<circle class="slice z{i + 1}" r="{R}" cx="60" cy="60" '
+            f'fill="none" stroke-width="{STROKE}" '
+            f'stroke-dasharray="{length:.2f} {circ - length:.2f}" '
+            f'stroke-dashoffset="{-offset:.2f}" '
+            f'transform="rotate(-90 60 60)">'
+            f'<title>{_esc(label)} — {secs // 60}:{secs % 60:02d} '
+            f'({share * 100:.0f} %)</title></circle>')
+        offset += share * circ
+        legend.append(
+            f'<span class="key"><i class="sw z{i + 1}"></i>{_esc(label)} '
+            f'<b>{share * 100:.0f} %</b></span>')
+
+    # The centre carries the total, which is what the ring is a division of —
+    # a donut with an empty hole wastes the one place a reader looks first.
+    mins = int(total // 60)
+    return (f'<div class="donut-wrap">'
+            f'<svg viewBox="0 0 120 120" class="donut" role="img" '
+            f'aria-label="répartition du temps par zone de fréquence cardiaque">'
+            f"{''.join(out)}"
+            f'<text x="60" y="58" class="dnum">{mins}</text>'
+            f'<text x="60" y="72" class="dlab">min</text>'
+            f"</svg>"
+            f'<div class="legend">{"".join(legend)}</div></div>')
+
+
+# HealthKit quantity identifiers, minus the prefix the parser already strips,
+# and what each is actually in. The units come from `SyncEngine.statsDict`,
+# which converts to a canonical unit per type before writing the delta — so
+# these are not a guess, they are that function's other half.
+MEASURES = {
+    "RunningPower": ("Puissance", "W"),
+    "RunningSpeed": ("Vitesse", "km/h"),
+    "RunningStrideLength": ("Longueur de foulée", "m"),
+    "RunningVerticalOscillation": ("Oscillation verticale", "m"),
+    "RunningGroundContactTime": ("Temps de contact au sol", "ms"),
+    "CyclingPower": ("Puissance", "W"),
+    "CyclingSpeed": ("Vitesse", "km/h"),
+    "CyclingCadence": ("Cadence", "tr/min"),
+    "WalkingSpeed": ("Vitesse", "km/h"),
+    "RespiratoryRate": ("Fréquence respiratoire", "/min"),
+    "ActiveEnergyBurned": ("Énergie active", "kcal"),
+    "BasalEnergyBurned": ("Énergie de repos", "kcal"),
+    "DistanceSwimming": ("Distance", "m"),
+    "DistanceCycling": ("Distance", "m"),
+    "DistanceWalkingRunning": ("Distance", "m"),
+}
+
+# `HKWorkoutEventType`, in words. "motionPaused" on screen is the enum leaking.
+EVENT_KINDS = {
+    "lap": "tour", "segment": "repère auto", "marker": "marqueur",
+    "pause": "pause", "resume": "reprise",
+    "motionPaused": "pause auto", "motionResumed": "reprise auto",
+    "pauseOrResumeRequest": "demande pause/reprise",
+}
+
+
+def _measure(key: str) -> str:
+    """The measure's name, falling back to the raw identifier."""
+    return MEASURES.get(key, (key, ""))[0]
+
+
+def _unit(key: str) -> str:
+    """Its unit, or nothing rather than a wrong one."""
+    return MEASURES.get(key, ("", ""))[1]
+
+
+def _event_kind(kind: str) -> str:
+    return EVENT_KINDS.get(kind, kind)
 
 
 def segments_section(segments: list[dict] | None, events: list[dict] | None) -> str:
@@ -775,7 +1012,13 @@ def segments_section(segments: list[dict] | None, events: list[dict] | None) -> 
     "Swimming" for leg one of a triathlon would be a fact nobody recorded.
     """
     out = ""
-    if segments:
+    # A single "segment" is the workout itself — HealthKit gives every workout
+    # one `HKWorkoutActivity`, and only a multi-sport one gets more. Printing a
+    # one-row table headed "Segments" said nothing, and said it directly above
+    # a "Marqueurs" line reading "61× segment", so the page appeared to claim
+    # one segment and sixty-one at once. They are different things with the
+    # same name: the leg, and the marker the watch drops inside it.
+    if segments and len(segments) > 1:
         rows = ""
         for s in segments:
             dur = (f"{int(s['duration_s'] // 60)}:{int(s['duration_s'] % 60):02d}"
@@ -784,19 +1027,41 @@ def segments_section(segments: list[dict] | None, events: list[dict] | None) -> 
             hr = stats.get("HeartRate") or {}
             extra = f"{hr['avg']:.0f} bpm" if hr.get("avg") else ""
             rows += (f"<tr><td>{s['idx']}</td>"
+                     f"<td>{_esc(_activity(s.get('activity')))}</td>"
                      f"<td>{_esc(s['started_at'][11:19])}</td>"
-                     f"<td>{_esc(dur)}</td><td>{_esc(extra)}</td>"
-                     f"<td>{len(stats)} mesure(s)</td></tr>")
-        out += ("<h2>Segments</h2><div class=\"card\"><table>"
-                "<tr><th>#</th><th>début</th><th>durée</th><th>FC moy</th>"
-                f"<th>données</th></tr>{rows}</table>"
-                '<p class="note">Découpage enregistré par la montre. '
-                "L'export ne nomme pas le sport de chaque segment.</p></div>")
+                     f"<td>{_esc(dur)}</td><td>{_esc(extra)}</td></tr>")
+        out += ("<h2>Legs</h2><div class=\"card\"><table>"
+                "<tr><th>#</th><th>sport</th><th>début</th><th>durée</th>"
+                f"<th>FC moy</th></tr>{rows}</table>"
+                '<p class="note">Les segments multisports enregistrés par la '
+                "montre — les legs d'un triathlon. L'export ne nomme pas le "
+                "sport de chaque leg ; celui de la séance est repris.</p></div>")
+    elif segments:
+        # One leg, but its `stats` carry measures held nowhere else — running
+        # power, stride length, ground-contact time, vertical oscillation —
+        # which the one-row table reduced to "9 mesure(s)" and threw away.
+        stats = segments[0].get("stats") or {}
+        shown = "".join(
+            f"<tr><td>{_esc(_measure(k))}</td>"
+            f"<td>{v.get('avg', v.get('sum', 0)):.1f}</td>"
+            f"<td>{_esc(_unit(k))}</td></tr>"
+            for k, v in sorted(stats.items())
+            if k != "HeartRate" and isinstance(v, dict)
+            and (v.get("avg") is not None or v.get("sum") is not None))
+        if shown:
+            out += ('<h2>Mesures de la montre</h2><div class="card"><table>'
+                    f"<tr><th>mesure</th><th>valeur</th><th>unité</th></tr>"
+                    f"{shown}</table>"
+                    '<p class="note">Relevées sur la séance entière. Moyenne, '
+                    "sauf pour les cumuls (distance, énergie).</p></div>")
     if events:
-        chips = " · ".join(f"{e['count']}× {_esc(e['kind'])}" for e in events)
+        chips = " · ".join(f"{e['count']}× {_esc(_event_kind(e['kind']))}"
+                           for e in events)
         out += (f'<h2>Marqueurs</h2><div class="card"><p>{chips}</p>'
-                '<p class="note">Laps, segments, pauses et reprises tels que '
-                "la montre les a posés.</p></div>")
+                '<p class="note">Repères posés par la montre pendant la '
+                "séance — tours automatiques, pauses, reprises. Sans rapport "
+                "avec les legs multisports ci-dessus, qui portent hélas le "
+                "même nom chez Apple.</p></div>")
     return out
 
 
@@ -873,7 +1138,8 @@ def render_session(detail: dict) -> str:
             f'<h2>Fréquence cardiaque</h2><div class="card">'
             f'<p class="note">{hr["samples"]:,} samples · avg {hr["avg"]:.0f} · '
             f'{hr["min"]:.0f}–{hr["max"]:.0f} bpm</p>'
-            f"<table><tr><th>zone</th><th>time</th><th>share</th></tr>{rows}</table>"
+            + zone_donut(hr)
+            + f"<table><tr><th>zone</th><th>time</th><th>share</th></tr>{rows}</table>"
             f'<p class="note">Drift by thirds: {_esc(drift)}</p>'
             f'<p class="note">Zones from the <b>{_esc(zm["source"])}</b> model'
             + (f' effective {_esc(zm["effective_from"])}' if zm.get("effective_from") else "")

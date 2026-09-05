@@ -171,6 +171,28 @@ def context(store: Store, tz: tzinfo | None = None) -> dict:
     }
 
 
+def race_days() -> dict[str, str]:
+    """Which days hold a race, by the archive that exists for them.
+
+    Nothing on a workout says "this was a race" — HealthKit has no such flag
+    and none has ever been recorded — so the only evidence in the project is
+    that `ah-races` wrote an archive for it. Filenames are `YYYY-MM-DD-slug`,
+    so the date is the join.
+
+    That makes this a floor, not a census: a race with no archive is invisible
+    here, which is worth knowing before reading the filter as "all my races".
+    """
+    outdir = repo_root() / "data" / "races"
+    if not outdir.is_dir():
+        return {}
+    days = {}
+    for path in sorted(outdir.glob("*.md")):
+        stem = path.stem
+        if len(stem) > 10 and stem[4] == "-" and stem[7] == "-":
+            days[stem[:10]] = stem
+    return days
+
+
 def list_sessions(store: Store, start: date, end: date,
                   activity: str | None = None, tz: tzinfo | None = None) -> dict:
     """Every session in the window. No distance floors, no filtering by interest.
@@ -195,6 +217,7 @@ def list_sessions(store: Store, start: date, end: date,
     with store.cursor() as cur:
         cur.execute(sql, params)
         rows = cur.fetchall()
+    races = race_days()
 
     return {
         "coverage": _coverage(store, end, tz),
@@ -205,7 +228,7 @@ def list_sessions(store: Store, start: date, end: date,
              "max_hr": r["max_hr"], "energy_kcal": r["energy_kcal"],
              "indoor": r["indoor"], "tz": r["tz_name"],
              "has_hr_series": r["has_hr_series"], "has_laps": r["has_laps"],
-             "note": r["note"]}
+             "note": r["note"], "race": races.get(r["started_at"].date().isoformat())}
             for r in rows
         ],
     }
