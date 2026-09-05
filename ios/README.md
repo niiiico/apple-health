@@ -78,30 +78,38 @@ Apple ID also limits sideloads to 7 days).
 
 ## Shipping a build to the phone
 
-Bumping `CURRENT_PROJECT_VERSION` changes nothing on the phone by itself. The
-OTA server serves the newest `.ipa` under `distrib/`, which is gitignored and
-starts out absent — so a fix can be committed, correct and entirely unshipped.
-That is not hypothetical: build 45 fixed the humidity scaling on 2026-08-29 and
-was still not installed a week later, because nothing between the commit and
-the phone ever ran.
+Releases go to <https://ota.int.dev2.net/> via `otactl` (see
+`~/Repositories/ota`); `ota.toml` beside the `.xcodeproj` already carries the
+settings, including `export_method = "development"` and why. From `ios/App`:
 
 ```bash
-zsh scripts/build_ipa.sh      # archive + ad-hoc export into distrib/
-uv run python tools/ota/ota_server.py
+uv run --project ~/Repositories/ota otactl release ios --notes "…"
+uv run --project ~/Repositories/ota otactl status
 ```
 
-Then open `https://<mac-ip>:8443/` in Safari on the iPhone and install.
+`tools/ota/ota_server.py` is the earlier Mac-hosted server it replaced; the
+service in k3s is what the phone points at.
 
-**Confirm the build actually arrived**, rather than assuming the install took:
-every delta carries `app_version` as `"1.0 (46)"`, so
+**Bump `CURRENT_PROJECT_VERSION` by hand first.** It is the commit count, and
+`otactl` cannot stamp it here: it expects an Xcode script phase to write
+`CFBundleVersion`, but this project sets both `INFOPLIST_FILE` and
+`GENERATE_INFOPLIST_FILE`, so Xcode regenerates the plist afterwards and
+discards the stamp. Set it to what the count *will be* once the bump is
+committed — `git rev-list --count HEAD` plus one — which is why build 45 is
+commit 45. Get it wrong and the update check, which compares exactly that
+number, never offers the build.
+
+**Publishing is not installing, and only the phone can do the second.** Build
+45 was published on 2026-08-29 and was still not on the watch a week later,
+which is the whole reason the humidity fix sat unused — nothing here can tell
+you it arrived. The delta says: `app_version` reads `"1.0 (63)"` once the phone
+is running build 63, and a bare `"1.0"` means older than 45, the build number
+being one of the things 45 added.
 
 ```bash
 python -c "import json,sys;print(json.load(open(sys.argv[1]))['app_version'])" \
     "$(ls -t /Volumes/nicolas-data/HealthData/healthsync-inbox/delta-*.json | head -1)"
 ```
-
-A bare `"1.0"` means a build older than 45 — the build number was itself one of
-the things 45 added, so its absence is the signal.
 
 ## Bootstrap cutoff — why the first sync is small
 
