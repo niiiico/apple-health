@@ -268,6 +268,49 @@ def set_document(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
     return {"message": f"« {slug} » {'mis à jour' if existed else 'créé'}"}
 
 
+def answer_question(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
+    """Answer a question a review asked, and let the review be rewritten.
+
+    Clearing `session_reviews` for that workout is the point of the whole
+    feature, not a side effect: a session is reviewed once, so without this the
+    answer would land in a table nothing re-reads and the question would come
+    back in the next session's review, which is exactly what happened three
+    times over. Dropping the row puts the session back in the cron's queue
+    (`WHERE r.workout_id IS NULL`) so it is re-read with the answer in hand.
+
+    An answer is the athlete's own words, so it is versioned like a note: the
+    box is editable, and correcting "elle va bien" to "elle a repris jeudi" is
+    a change worth being able to see.
+    """
+    key = (payload.get("key") or "").strip()
+    answer = (payload.get("answer") or "").strip()
+    if not key:
+        raise ValueError("key is required")
+    if not answer:
+        raise ValueError("une réponse vide n'est pas une réponse")
+
+    with store.cursor() as cur:
+        cur.execute("SELECT question, workout_id, answer FROM review_questions"
+                    " WHERE key = %s", (key,))
+        row = cur.fetchone()
+        if row is None:
+            raise ValueError(f"no question with key {key!r}")
+        archive(cur, "review_questions", key, "athlete")
+        cur.execute(
+            """UPDATE review_questions SET answer = %s, answered_at = now()
+                WHERE key = %s""", (answer, key))
+        workout_id = row["workout_id"]
+        requeued = False
+        if workout_id is not None:
+            cur.execute("DELETE FROM session_reviews WHERE workout_id = %s",
+                        (workout_id,))
+            requeued = cur.rowcount > 0
+    store.commit()
+    return {"message": "réponse enregistrée"
+                       + (" — le compte-rendu sera réécrit" if requeued else ""),
+            "workout_id": workout_id, "requeued": requeued}
+
+
 def set_session_note(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
     """Attach (or clear) the note on one session."""
     try:
@@ -439,6 +482,7 @@ ACTIONS: dict[str, Callable[[Store, dict[str, Any]], dict[str, Any]]] = {
     "archive_goal": archive_goal,
     "set_session_note": set_session_note,
     "set_period_note": set_period_note,
+    "answer_question": answer_question,
 }
 
 

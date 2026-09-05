@@ -88,6 +88,27 @@ def context(store: Store, tz: tzinfo | None = None) -> dict:
         memory = [{"note": r["note"], "learned_at": r["learned_at"].isoformat()}
                   for r in cur.fetchall()]
 
+        # Both halves, deliberately. The open ones so a review does not re-ask
+        # what is already outstanding under a different wording; the answered
+        # ones so it does not re-ask what he has already told us, which is the
+        # failure that made this table necessary — the hip question came back
+        # three times because nothing carried the answer forward.
+        cur.execute("""SELECT key, question, workout_id, asked_at, times_asked
+                         FROM review_questions WHERE answer IS NULL
+                     ORDER BY last_asked_at DESC LIMIT 20""")
+        open_questions = [{"key": r["key"], "question": r["question"],
+                           "workout_id": r["workout_id"],
+                           "asked_at": r["asked_at"].isoformat(),
+                           "times_asked": r["times_asked"]}
+                          for r in cur.fetchall()]
+        cur.execute("""SELECT key, question, answer, answered_at
+                         FROM review_questions WHERE answer IS NOT NULL
+                     ORDER BY answered_at DESC LIMIT 20""")
+        answered = [{"key": r["key"], "question": r["question"],
+                     "answer": r["answer"],
+                     "answered_at": r["answered_at"].isoformat()}
+                    for r in cur.fetchall()]
+
         cur.execute("""SELECT session_id, asked_at, question, answer, queries
                          FROM chat_turns WHERE archived_at IS NULL
                      ORDER BY asked_at DESC LIMIT 30""")
@@ -142,6 +163,8 @@ def context(store: Store, tz: tzinfo | None = None) -> dict:
         # it was written to a stranger.
         "athlete": athlete,
         "memory": memory,
+        "open_questions": open_questions,
+        "answered_questions": answered,
         "plan": plan,
         "documents": docs,
         "chat_history": history,
@@ -326,6 +349,17 @@ def session_detail(store: Store, workout_id: int, tz: tzinfo | None = None) -> d
                    "created_at": row["created_at"].isoformat(),
                    "observed_through": row["observed_through"]} if row else None)
 
+        cur.execute(
+            """SELECT key, question, answer, asked_at, answered_at, times_asked
+                 FROM review_questions WHERE workout_id = %s
+             ORDER BY answer IS NOT NULL, last_asked_at DESC""", (workout_id,))
+        questions = [{"key": r["key"], "question": r["question"],
+                      "answer": r["answer"],
+                      "asked_at": r["asked_at"].isoformat(),
+                      "answered_at": (r["answered_at"].isoformat()
+                                      if r["answered_at"] else None),
+                      "times_asked": r["times_asked"]} for r in cur.fetchall()]
+
     with store.cursor() as cur:
         cur.execute(
             """SELECT body, archived_at, replaced_by FROM revisions
@@ -375,6 +409,10 @@ def session_detail(store: Store, workout_id: int, tz: tzinfo | None = None) -> d
         # apart from `session.note`, which is the athlete's: a model's opinion
         # and the athlete's recollection must never become indistinguishable.
         "review": review,
+        # What that review could not work out on its own, and whatever he has
+        # since said back. The answers are his words, so they sit beside the
+        # note rather than inside the review.
+        "questions": questions or None,
         # Superseded versions, newest first. A note edited a week later still
         # describes the day it was written about.
         "note_history": history_rows or None,

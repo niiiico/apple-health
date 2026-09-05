@@ -530,6 +530,43 @@ _MIGRATIONS: tuple[str, ...] = (
     UPDATE workouts SET weather_humidity_pct = weather_humidity_pct / 100
     WHERE weather_humidity_pct > 100;
     """,
+    # 17 — the questions a review asks, and somewhere to answer them.
+    #
+    # Reviews asked things the record could not tell them — whether a hip had
+    # settled, whether a session was the one the plan meant — and there was
+    # nowhere to reply. Worse, a session is reviewed exactly once (the cron
+    # takes `WHERE r.workout_id IS NULL`), so a question lived in a document
+    # that would never be rewritten: answering it in that session's note
+    # changed nothing, and the question came back in the next review because
+    # the next model read the last one. It went round three times.
+    #
+    # `key` is the primary key and the model chooses it, so re-asking is an
+    # update rather than a second row: that is what lets one question say
+    # "asked on the 27th, again on the 2nd and the 5th" instead of appearing
+    # three times. It also makes the write idempotent, which matters because
+    # the reviewer runs twice a day and may look at the same open question.
+    #
+    # `workout_id` is the session that prompted it, and `ON DELETE SET NULL`
+    # rather than CASCADE: "does the hip still hurt" outlives the ride that
+    # raised it. The question is about the athlete, not about the row.
+    #
+    # An answer is the athlete's own words, so it goes through `archive()` like
+    # a note or a goal — see 13.
+    """
+    CREATE TABLE review_questions (
+        key           text PRIMARY KEY,
+        workout_id    bigint REFERENCES workouts(id) ON DELETE SET NULL,
+        question      text NOT NULL,
+        asked_at      timestamptz NOT NULL DEFAULT now(),
+        last_asked_at timestamptz NOT NULL DEFAULT now(),
+        times_asked   int NOT NULL DEFAULT 1,
+        answer        text,
+        answered_at   timestamptz
+    );
+
+    CREATE INDEX review_questions_open ON review_questions (last_asked_at DESC)
+        WHERE answer IS NULL;
+    """,
 )
 
 
@@ -540,6 +577,8 @@ _VERSIONED = {
     "documents":     ("SELECT body FROM documents WHERE slug = %s"),
     "profile":       ("SELECT concat_ws(E'\\n\\n', background, philosophy,"
                       " constraints) AS body FROM profile WHERE id = %s"),
+    "review_questions": ("SELECT answer AS body FROM review_questions"
+                         " WHERE key = %s"),
 }
 
 

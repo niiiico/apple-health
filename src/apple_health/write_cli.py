@@ -17,6 +17,7 @@ Usage::
     ah-write note --id 5560 --text "…"
     ah-write goal --text "…" [--target-date 2026-10-03]
     ah-write doc --slug kujukuri-2026-plan --text "…" [--append]
+    ah-write question --key hanche-droite --text "…" [--id 5560]
     ah-write changes [--limit 10]
 
 ``AH_WRITE_SESSION`` ties each write to the conversation that made it, so a
@@ -182,6 +183,56 @@ def write_memory(store: Store, text: str) -> str:
     return summary
 
 
+def write_question(store: Store, key: str, text: str,
+                   workout_id: int | None) -> str:
+    """Record a question for the athlete that the record cannot answer.
+
+    For the gap a review keeps running into — whether a hip settled, whether a
+    session was the one the plan meant, what the wetsuit felt like. Previously
+    these were asked inside the review prose, which is a place with no reply
+    box: a session is reviewed once, so the question sat in a document that
+    would never be rewritten, and the only way it reached anyone was the next
+    review repeating it.
+
+    `key` is chosen by the caller and is the identity of the question, so
+    asking again is an update. Re-asking an *open* one bumps its count and the
+    date — the athlete sees "asked three times", which is information about how
+    much it matters. Re-asking an *answered* one changes nothing and reports
+    the answer, because the answer is already in `ah-query context` and asking
+    again means it was not read; a genuinely new question deserves a new key.
+    """
+    key, text = key.strip(), text.strip()
+    if not key or not text:
+        raise SystemExit("question key and text are required")
+    with store.cursor() as cur:
+        cur.execute("SELECT question, answer, answered_at, times_asked"
+                    " FROM review_questions WHERE key = %s", (key,))
+        row = cur.fetchone()
+        if row and row["answer"]:
+            return (f"« {key} » a déjà été répondue le "
+                    f"{row['answered_at']:%Y-%m-%d} : {row['answer']}")
+        if row:
+            cur.execute(
+                """UPDATE review_questions
+                      SET question = %s, last_asked_at = now(),
+                          times_asked = times_asked + 1
+                    WHERE key = %s RETURNING times_asked""", (text, key))
+            n = cur.fetchone()["times_asked"]
+            summary = f"question « {key} » reposée ({n}× en tout)"
+            _record(cur, "review_questions", key, summary,
+                    {"question": row["question"], "times_asked": row["times_asked"]},
+                    {"question": text, "times_asked": n})
+        else:
+            cur.execute(
+                """INSERT INTO review_questions (key, workout_id, question)
+                   VALUES (%s,%s,%s)""", (key, workout_id, text))
+            summary = f"question « {key} » posée"
+            _record(cur, "review_questions", key, summary, None,
+                    {"question": text, "workout_id": workout_id})
+    store.commit()
+    return summary
+
+
 def forget_memory(store: Store, mem_id: int) -> str:
     """Archive a remembered fact that turned out to be wrong or stale."""
     with store.cursor() as cur:
@@ -234,6 +285,13 @@ def main(argv: list[str] | None = None) -> int:
     m = sub.add_parser("memory", help="record something durable you worked out")
     m.add_argument("--text", required=True)
 
+    q = sub.add_parser("question", help="ask the athlete something the record cannot answer")
+    q.add_argument("--key", required=True,
+                   help="stable identity; re-using it re-asks rather than duplicating")
+    q.add_argument("--text", required=True)
+    q.add_argument("--id", type=int, default=None,
+                   help="the session that prompted it, if there is one")
+
     f = sub.add_parser("forget", help="archive a remembered fact")
     f.add_argument("--id", type=int, required=True)
 
@@ -247,6 +305,8 @@ def main(argv: list[str] | None = None) -> int:
             print(write_note(store, args.id, args.text))
         elif args.command == "goal":
             print(write_goal(store, args.text, args.target_date, args.id))
+        elif args.command == "question":
+            print(write_question(store, args.key, args.text, args.id))
         elif args.command == "memory":
             print(write_memory(store, args.text))
         elif args.command == "forget":

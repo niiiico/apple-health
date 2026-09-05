@@ -143,6 +143,23 @@ TOOLS_DOC = """You have exactly one tool: the `ah-query` command, via Bash. It p
       observations: anything factual in them must be re-queried before you rely
       on it. They may have been wrong.
 
+  ah-write question --key SLUG --text "..." [--id N]
+      Ask the athlete something the record cannot tell you, where knowing it
+      would change what you conclude. He sees open questions on the page and
+      answers there; the answers come back in `ah-query context` and stay
+      there, so ask once and read the answer rather than re-asking in prose.
+
+      `--key` is the question's identity, not a label: re-using it re-asks the
+      same question and shows him it has come round again, while a new key is a
+      new question. `--id` is the session that prompted it, which is where the
+      question is shown; answering it puts that session back in the review
+      queue so your reading of it is rewritten with the answer in hand.
+
+      Ask only what would change something. "How did it feel" on a commute is
+      noise, and a page of open questions is one nobody reads. Do not ask what
+      the record already holds, and do not ask again what `context` shows as
+      answered — if an answer is there, use it.
+
   ah-write note --id N --text "..."
   ah-write goal --text "..." [--target-date YYYY-MM-DD]
   ah-write doc --slug SLUG --text "..." [--append]
@@ -289,6 +306,16 @@ Cover, only where there is something to say: what the session was, how it went \
 against the athlete's goals, anything notable in the zone distribution or drift, \
 and anything that should change what they do next. If a session is unremarkable, \
 saying so is the correct review.
+
+`ah-query context` carries his answers to questions already asked, and the ones \
+still open. Read them: an answer is his own account of something the record \
+cannot show, and it outranks your inference about the same thing. If a session \
+turns on something only he can tell you — whether a pain settled, whether a \
+session was the one the plan meant, what the conditions were — record it with \
+`ah-write question --id {workout_id}` instead of asking inside the review. \
+A question in the prose has nowhere to be answered: this review is written once \
+and never revisited, which is how the same question came round three times. \
+Asking properly puts it in front of him and brings you back here when he replies.
 
 Write only the review text. No preamble, no heading, no sign-off."""
 

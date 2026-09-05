@@ -425,6 +425,56 @@ def sessions_section(sessions: list[dict], heading: str = "Séances",
     return f"<h2>{heading}</h2>" + "".join(cards) + (f"<p>{more}</p>" if more else "")
 
 
+def questions_block(questions: list[dict] | None, *, heading: str = "Questions",
+                    link_sessions: bool = False) -> str:
+    """Open questions with a box to answer them, then the answered ones.
+
+    These used to be sentences inside a review, which is a document with no
+    reply box — and since a session is reviewed only once, the question sat
+    somewhere that would never be rewritten. The athlete read them and had
+    nowhere to put the answer; the next review asked again.
+
+    Open ones come first and carry how often they have been asked, because a
+    question on its third asking is telling you something the first was not.
+    Answered ones stay visible rather than disappearing: what he said is the
+    part worth keeping, and a question that vanishes on being answered gives no
+    sign the loop closed.
+    """
+    if not questions:
+        return ""
+    open_ones = [q for q in questions if not q.get("answer")]
+    answered = [q for q in questions if q.get("answer")]
+
+    rows = []
+    for q in open_ones:
+        asked = _esc(q["asked_at"][:10])
+        again = (f" · reposée {q['times_asked']}×" if q.get("times_asked", 1) > 1
+                 else "")
+        where = ""
+        if link_sessions and q.get("workout_id"):
+            where = (f' · <a href="/session/{int(q["workout_id"])}">'
+                     f'la séance</a>')
+        rows.append(
+            f'<div class="card" data-card>'
+            f'<p><strong>{_esc(q["question"])}</strong></p>'
+            f'<p class="note">posée le {asked}{again}{where}</p>'
+            f'<input type="hidden" data-field="key" value="{_esc(q["key"])}">'
+            f'<textarea data-field="answer" rows="2" '
+            f'placeholder="ta réponse…"></textarea>'
+            f'<button data-action="answer_question" data-reload="1">Répondre</button>'
+            f'<span data-status></span></div>')
+    for q in answered:
+        rows.append(
+            f'<div class="card">'
+            f'<p class="note">{_esc(q["question"])}</p>'
+            f'<p>{_esc(q["answer"])}</p>'
+            f'<p class="note">répondu le {_esc((q.get("answered_at") or "")[:10])}</p>'
+            f'</div>')
+
+    count = f" ({len(open_ones)})" if open_ones else ""
+    return f'<h2>{_esc(heading)}{count}</h2>' + "".join(rows)
+
+
 def note_history_section(history: list[dict] | None) -> str:
     """Superseded versions of the note, folded away.
 
@@ -613,6 +663,13 @@ def render(context: dict, sessions: list[dict], start: date, end: date) -> str:
         + coverage_line(context["coverage"])
         + window_summary(sessions, start, end, context["record"])
         + chat_section(context.get("chat_history"))
+        # High on the page, and only when something is outstanding. A question
+        # the advisor cannot answer from the record is the one thing here that
+        # needs *him* — everything else on this page it can work out alone — so
+        # it goes above the session rather than below the plan. Answered ones
+        # are not repeated here; they live on the session they came from.
+        + questions_block([q for q in (context.get("open_questions") or [])],
+                          heading="Questions ouvertes", link_sessions=True)
         # The last session, not forty-five days of them. The list is the whole
         # point of /seances; repeating it here pushed everything else off the
         # page and made the landing view a worse version of that one.
@@ -771,6 +828,8 @@ def render_session(detail: dict) -> str:
         + ("Réanalyser" if review else "Analyser cette séance") +
         '</button> <span data-status></span></div>')
 
+    questions_section = questions_block(detail.get("questions"))
+
     # Conditions the watch recorded. Shown only when present: a blank means the
     # watch did not record it, and a printed 0 °C would read as a cold morning.
     conditions = " · ".join(x for x in (
@@ -859,7 +918,7 @@ def render_session(detail: dict) -> str:
         f'<p class="cov">{_esc(stats)} · départ {_esc(s["started_at"][11:16])} '
         f'{_esc(s.get("tz") or "")}</p>'
         + (f'<p class="cov">{_esc(conditions)}</p>' if conditions else "")
-        + coverage_line(detail["coverage"]) + review_section
+        + coverage_line(detail["coverage"]) + review_section + questions_section
         + route_section(detail.get("route"))
         + segments_section(detail.get("segments"), detail.get("events"))
         + hr_html + laps_html

@@ -11,6 +11,27 @@ fresher.
 Not ArgoCD-managed — neither is tvledger. `apple-health.yaml` is the record of
 what should be running; apply it directly.
 
+## A schema change is a deploy, and it goes first
+
+`Store()` migrates on open, and the pod refuses a database newer than the code
+it was built from (`database is at schema N but this build knows only M`). That
+guard is right — but it means **any local command that opens a Store applies
+pending migrations to the database the cluster is using**, and the running pod
+fails readiness the moment it does. Not the pod's next restart: immediately, on
+the next `/healthz`. `/livez` stays green and nothing restarts, so the only
+symptom is a 503.
+
+So when a commit adds a migration, build and roll the image *before* running
+anything locally against `APPLE_HEALTH_DSN` — `ah-query`, `ah-write`, `ah-sync`
+with the DSN set, or a one-off `python -c` that constructs a `Store`. This has
+taken the site down twice, both times from a laptop command that looked
+read-only.
+
+Recovering is forward only: build, push, roll. Do **not** delete the
+`schema_version` row to let the old pod start — the migration runs again on the
+next deploy, and a data migration that is not idempotent will corrupt what it
+already fixed.
+
 ## Build and push
 
 The registry speaks plain HTTP, which `docker push` refuses unless the daemon is
