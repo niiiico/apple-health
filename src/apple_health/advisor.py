@@ -317,6 +317,16 @@ A question in the prose has nowhere to be answered: this review is written once 
 and never revisited, which is how the same question came round three times. \
 Asking properly puts it in front of him and brings you back here when he replies.
 
+When you are here *because* he answered one, judge whether the answer outlives \
+this session. Most do not: whether one Thursday's tempo was deliberate matters \
+for that Thursday and nowhere else, and belongs only on the question. But some \
+answers are standing facts — a fixed Saturday commitment, a bike that is never \
+recorded, a pain that recurs under load — and those you should put in \
+`ah-write memory`, because the next review will need them and re-reading every \
+old answer to find them is not something you will reliably do. You decide which \
+it is; write the fact, not the exchange, and do not record one that `context` \
+already shows.
+
 Write only the review text. No preamble, no heading, no sign-off."""
 
 PLAN_TASK = SYSTEM + "\n\n" + TOOLS_DOC + """
