@@ -113,3 +113,46 @@ def test_the_session_link_is_only_offered_when_asked_for():
           "times_asked": 1}]
     assert "/session/5566" in ui.questions_block(q, link_sessions=True)
     assert "/session/5566" not in ui.questions_block(q)
+
+
+# --- when the re-analysis actually runs --------------------------------------
+#
+# A review often asks two or three things about one session, and answering them
+# is that many separate saves. What happens between the first answer and the
+# last is the whole of this section.
+
+def test_the_job_subject_distinguishes_sessions():
+    from apple_health.web import job_subject
+    assert job_subject("review_session", {"workout_id": 5571}) != \
+           job_subject("review_session", {"workout_id": 5570})
+
+
+def test_a_second_answer_does_not_start_a_second_analysis():
+    """Two runs for one session do not merely waste a model call: the second
+    overwrites the first, so the surviving review is whichever finished last —
+    not necessarily the one that read the most answers."""
+    from apple_health import web
+    subject = web.job_subject("review_session", {"workout_id": 999})
+    with web._JOBS_LOCK:
+        web._JOBS["t"] = {"state": "running", "action": "review_session",
+                          "subject": subject, "started_at": 0}
+    try:
+        assert web.job_running(subject)
+        assert not web.job_running(
+            web.job_subject("review_session", {"workout_id": 998}))
+    finally:
+        with web._JOBS_LOCK:
+            web._JOBS.pop("t", None)
+
+
+def test_a_finished_job_no_longer_blocks():
+    from apple_health import web
+    subject = web.job_subject("review_session", {"workout_id": 997})
+    with web._JOBS_LOCK:
+        web._JOBS["t2"] = {"state": "done", "action": "review_session",
+                           "subject": subject, "started_at": 0}
+    try:
+        assert not web.job_running(subject)
+    finally:
+        with web._JOBS_LOCK:
+            web._JOBS.pop("t2", None)

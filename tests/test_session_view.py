@@ -173,3 +173,41 @@ def test_the_window_is_stated_in_words():
     html = ui.render_sessions(ctx, _sessions(), date(2026, 8, 1), date(2026, 9, 6))
     assert "Fenêtre affichée" in html
     assert "37 jours" in html
+
+
+# --- the calendar ------------------------------------------------------------
+
+def test_a_calendar_sized_window_gets_grids():
+    """The default window is 45 days and must keep its calendar."""
+    html = ui.calendar_section(_sessions(), date(2026, 8, 1), date(2026, 9, 6))
+    assert html.count('class="month"') == 2
+    assert "grid7" in html
+
+
+def test_a_single_month_gets_one_grid():
+    html = ui.calendar_section(_sessions(), date(2026, 9, 1), date(2026, 9, 30))
+    assert html.count('class="month"') == 1
+
+
+def test_a_multi_year_window_gets_no_calendar_at_all():
+    """The race filter spans the whole record — 165 month grids, one page."""
+    html = ui.calendar_section(_sessions(), date(2013, 1, 1), date(2026, 9, 5))
+    assert 'class="month"' not in html
+    assert "165 mois" in html
+
+
+def test_the_boundary_is_inclusive_of_the_cap():
+    """Three months is still a calendar; four is a wall."""
+    assert 'class="month"' in ui.calendar_section(
+        [], date(2026, 7, 1), date(2026, 9, 30))
+    assert 'class="month"' not in ui.calendar_section(
+        [], date(2026, 6, 1), date(2026, 9, 30))
+
+
+def test_the_races_view_renders_no_grid():
+    ctx = {"coverage": {}, "record": {}}
+    html = ui.render_sessions(ctx, _sessions(), date(2013, 1, 1), date(2026, 9, 5),
+                              races_only=True)
+    assert 'class="month"' not in html
+    # The list still does its job.
+    assert 'class="when"' in html

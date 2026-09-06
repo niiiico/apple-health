@@ -513,13 +513,30 @@ def render_versions(target: str, key: str, versions: list[dict],
         f'<p><a class="btn" href="/">&larr; retour</a></p>{rows}'))
 
 
+# How many month grids are still a calendar. Past this the thing stops being a
+# view and becomes a wall: the race filter spans the whole record, which is 165
+# months, and the page rendered every one of them.
+CALENDAR_MONTHS = 3
+
+
 def calendar_section(sessions: list[dict], start: date, end: date) -> str:
     """Which days had training, as a month grid.
 
     A list answers "what did I do on the 2nd"; this answers "how does the block
     look", which is the question a training week is actually judged on. Empty
     days are the information — three blanks in a row is the thing worth seeing.
+
+    Only for a window that is calendar-sized. Over thirteen years there is no
+    block to see the shape of, and scrolling 165 grids to find three races is
+    worse than the list, which is already showing exactly those three. So it
+    steps aside and says so rather than rendering something unusable.
     """
+    months_spanned = ((end.year - start.year) * 12 + end.month - start.month) + 1
+    if months_spanned > CALENDAR_MONTHS:
+        return ('<p class="note">Fenêtre trop large pour un calendrier '
+                f"({months_spanned} mois) — la liste ci-dessous fait le "
+                "travail. Réduis la fenêtre pour retrouver la grille.</p>")
+
     by_day: dict[str, list[dict]] = {}
     for s in sessions:
         by_day.setdefault(s["date"], []).append(s)

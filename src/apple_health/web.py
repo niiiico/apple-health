@@ -300,20 +300,37 @@ def answer_question(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
             """UPDATE review_questions SET answer = %s, answered_at = now()
                 WHERE key = %s""", (answer, key))
         workout_id = row["workout_id"]
-        requeued = False
+        requeued = pending = 0
         if workout_id is not None:
+            # Always dropped, whether or not it is rewritten now: the stored
+            # review was written without this answer, so it is out of date the
+            # moment the answer lands. Dropping it puts the session in the
+            # cron's queue as a floor — the worst case becomes "rewritten
+            # tonight", never "never".
             cur.execute("DELETE FROM session_reviews WHERE workout_id = %s",
                         (workout_id,))
-            requeued = cur.rowcount > 0
+            requeued = cur.rowcount
+            cur.execute(
+                """SELECT count(*) n FROM review_questions
+                    WHERE workout_id = %s AND answer IS NULL""", (workout_id,))
+            pending = cur.fetchone()["n"]
     store.commit()
-    # Rewritten now, not at 11:30 or 23:30. Waiting for the cron meant the one
-    # moment the answer is interesting — just after typing it — is the moment
-    # nothing happens, and up to twelve hours passed before the reading caught
-    # up with what he had said. `_then` is picked up by the POST handler, which
-    # is the only place that holds the dsn a background job needs.
-    return {"message": "réponse enregistrée"
-                       + (" — analyse relancée" if requeued else ""),
-            "workout_id": workout_id, "requeued": requeued,
+
+    # A review often asks two or three things about one session, and answering
+    # them is three separate saves. Re-analysing after each would spend three
+    # model calls to produce three readings, of which only the last saw every
+    # answer — and the first two would be written while the page still showed
+    # the questions they had not read. So the rewrite waits for the last one.
+    #
+    # Rewritten now rather than at 11:30 or 23:30 once nothing is outstanding:
+    # the moment an answer is interesting is just after typing it.
+    if pending:
+        return {"message": f"réponse enregistrée — {pending} question(s) encore "
+                           "ouverte(s) sur cette séance ; l'analyse sera "
+                           "relancée à la dernière",
+                "workout_id": workout_id, "pending": pending, "requeued": False}
+    return {"message": "réponse enregistrée" + (" — analyse relancée" if requeued else ""),
+            "workout_id": workout_id, "pending": 0, "requeued": bool(requeued),
             "_then": ({"action": "review_session",
                        "payload": {"workout_id": workout_id}} if requeued else None)}
 
@@ -550,12 +567,33 @@ def _prune_jobs(now: float) -> None:
             del _JOBS[key]
 
 
+def job_subject(name: str, payload: dict[str, Any]) -> str:
+    """What a job is about, for recognising a duplicate of it."""
+    return f"{name}:{payload.get('workout_id', '')}"
+
+
+def job_running(subject: str) -> bool:
+    """Is this exact work already in flight?
+
+    Analysing a session is a minute or two of model call. Two of them for one
+    session do not merely waste it: the second overwrites the first, so the
+    review that survives is whichever finished last, which is not necessarily
+    the one that read the most answers.
+    """
+    with _JOBS_LOCK:
+        return any(j["state"] == "running" and j.get("subject") == subject
+                   for j in _JOBS.values())
+
+
 def start_job(dsn: str | None, name: str, payload: dict[str, Any]) -> str:
     """Run a slow action in the background; return the handle to poll."""
     job_id = uuid.uuid4().hex
     _prune_jobs(time.time())
     with _JOBS_LOCK:
         _JOBS[job_id] = {"state": "running", "action": name,
+                         # What it is about, so a second request for the same
+                         # work can be recognised rather than run twice.
+                         "subject": job_subject(name, payload),
                          "started_at": time.time()}
 
     def note_progress(text: str, queries: list[str],
@@ -873,12 +911,19 @@ def handler_for(dsn: str | None, window_days: int = WINDOW_DAYS):
             # the answer rather than racing it.
             then = result.pop("_then", None)
             if then:
-                try:
-                    result["job"] = start_job(dsn, then["action"], then["payload"])
-                except Exception as exc:          # noqa: BLE001
-                    # The answer is saved; only the re-reading failed. Saying so
-                    # beats reporting the whole call as an error.
-                    result["message"] += f" (relance impossible : {exc})"
+                subject = job_subject(then["action"], then["payload"])
+                if job_running(subject):
+                    # Already being re-read. Starting a second would overwrite
+                    # the first with whichever finished last.
+                    result["message"] += " (analyse déjà en cours)"
+                else:
+                    try:
+                        result["job"] = start_job(dsn, then["action"], then["payload"])
+                    except Exception as exc:      # noqa: BLE001
+                        # The answer is saved; only the re-reading failed, and
+                        # the cron will still pick the session up. Saying so
+                        # beats reporting the whole call as an error.
+                        result["message"] += f" (relance impossible : {exc})"
             self._json(200, result)
 
         def log_message(self, fmt, *args):
