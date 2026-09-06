@@ -1,18 +1,19 @@
-"""One full sync cycle: iCloud → inbox → health.db → session files → Vault.
+"""One full sync cycle: iCloud → inbox → health.db → Postgres → files → Vault.
 
 Chains the pipeline in-process (no shell):
 
 1. ``sources.icloud`` — mirror new files from the app's iCloud Drive folder.
 2. ``sources.healthsync`` — merge pending deltas into ``health.db``.
-3. ``sinks.session_files`` — re-render the last 14 days of session markdown.
-4. ``commands.pgsync`` — apply the same deltas to Postgres, which the
+3. ``commands.pgsync`` — apply the same deltas to Postgres, which the
    renderers now prefer reading from.
-5. ``sinks.vault_box`` — refresh the rolling Vault files + weekly brief.
+4. ``commands.routepoints`` — load the GPX track points for whatever arrived.
+5. ``sinks.session_files`` — re-render the last 14 days of session markdown.
+6. ``sinks.vault_box`` — refresh the rolling Vault files + weekly brief.
 
 The transport is iCloud (ADR-004); Box remains only as the *destination* of
-step 4, the Claude Vault.
+step 6, the Claude Vault.
 
-Steps 2–5 are skipped when step 1 fetched nothing (pass ``--force`` to run
+Steps 2–6 are skipped when step 1 fetched nothing (pass ``--force`` to run
 them anyway). Designed for launchd (see ``tools/launchd/``) but safe to run by
 hand; every step is idempotent.
 
@@ -39,6 +40,7 @@ from ..config import repo_root
 from ..sources import healthsync
 from ..sources import icloud
 from . import pgsync
+from . import routepoints
 from ..sinks import session_files
 from ..sinks import vault_box
 
@@ -90,6 +92,26 @@ def main(argv: list[str] | None = None) -> int:
             print("postgres is behind; coverage will read stale until this is fixed",
                   file=sys.stderr)
             return pg_rc
+        # After pgsync, which is what creates the `routes` rows these attach to.
+        #
+        # Left out of the cycle until now, so every new session had a route
+        # summary and no track: the map and the elevation profile need the
+        # points, and loading them was a command somebody had to remember. Two
+        # days of riding had no map on the page for exactly that reason.
+        #
+        # Reports rather than raises. A GPX that will not parse costs a map,
+        # not a number — the workout, its distance and its heart rate are
+        # already in from the delta — and blocking the Vault brief over one
+        # would trade something that matters for something that does not.
+        try:
+            routepoints.main(["--inbox", str(args.inbox)])
+        except SystemExit as exc:
+            if exc.code:
+                print(f"route points failed (rc={exc.code}) — maps will be "
+                      "missing for the new sessions", file=sys.stderr)
+        except Exception as exc:
+            print(f"route points failed: {exc} — maps will be missing for the "
+                  "new sessions", file=sys.stderr)
     since = (date.today() - timedelta(days=14)).isoformat()
     session_files.main(["--db", str(args.db), "--inbox", str(args.inbox),
                          "--since", since])

@@ -107,7 +107,8 @@ uv run ah-ingest \
   into daily buckets; exports route GPX). Build/sign it from Xcode — see its
   README.
 - **Unattended:** `ah-sync` chains the whole pipeline
-  (`ah-fetch` → `ah-ingest` → `ah-sessions` → `ah-vault`) and can run
+  (`ah-fetch` → `ah-ingest` → `ah-pgsync` → `ah-routes` → `ah-sessions` →
+  `ah-vault`) and can run
   every 30 min under launchd — copy `tools/launchd/net.dev2.healthsync.sync.plist`
   into `~/Library/LaunchAgents/` and `launchctl load` it. The final step pushes
   curated summaries to the Claude Vault on Box and needs a one-time
